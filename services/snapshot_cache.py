@@ -236,6 +236,66 @@ SHA_FIELDS = ["sha256", "media_sha256", "hash", "file_hash", "media.sha256", "fi
 PHASH_FIELDS = ["photo_fingerprint.phash", "phash", "photo_phash", "image_phash", "media.phash", "file.phash"]
 FRAME_HASH_FIELDS = ["frame_hashes", "video_frame_hashes", "frames", "media.frame_hashes", "file.frame_hashes"]
 
+# Read only fields required by lookup. This materially reduces Mongo network traffic
+# compared with loading complete Adding Bot documents (raw captions, archive extras, etc.).
+LOOKUP_PROJECTION: dict[str, int] = {
+    "name": 1,
+    "character_name": 1,
+    "char_name": 1,
+    "item_name": 1,
+    "card_name": 1,
+    "display_name": 1,
+    "title": 1,
+    "anime_name": 1,
+    "anime": 1,
+    "series": 1,
+    "movie": 1,
+    "category": 1,
+    "rarity": 1,
+    "rank": 1,
+    "tier": 1,
+    "class": 1,
+    "card_id": 1,
+    "id": 1,
+    "item_id": 1,
+    "char_id": 1,
+    "character_id": 1,
+    "command_name": 1,
+    "source_key": 1,
+    "source_collection": 1,
+    "item_key": 1,
+    "name_aliases": 1,
+    "media_type": 1,
+    "type": 1,
+    "file_unique_id": 1,
+    "file_unique_ids": 1,
+    "photo_file_unique_id": 1,
+    "video_file_unique_id": 1,
+    "sha256": 1,
+    "sha256_aliases": 1,
+    "media_sha256": 1,
+    "hash": 1,
+    "file_hash": 1,
+    "phash": 1,
+    "photo_phash": 1,
+    "image_phash": 1,
+    "frame_hashes": 1,
+    "video_frame_hashes": 1,
+    "frames": 1,
+    "photo_fingerprint": 1,
+    "video_fingerprint": 1,
+    "media_geometry": 1,
+    "source_origin": 1,
+    "archive": 1,
+    "archive_chat_id": 1,
+    "archive_message_id": 1,
+    "fingerprint_version": 1,
+    "updated_at": 1,
+    "media": 1,
+    "file": 1,
+    "character": 1,
+}
+
 
 def parse_item(collection: str, default_command: str, doc: dict) -> ItemSnapshot | None:
     name = normalize_name(_first_present(doc, NAME_FIELDS))
@@ -391,27 +451,35 @@ class SnapshotCache:
         refresh_started_at = datetime.now(timezone.utc)
         new_items: dict[str, dict[str, ItemSnapshot]] = {}
         total = 0
+        failed_collections: list[str] = []
         for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
             collection_items: dict[str, ItemSnapshot] = {}
             try:
-                cursor = db[collection].find({})
+                cursor = db[collection].find({}, projection=LOOKUP_PROJECTION).batch_size(max(1, settings.snapshot_batch_size))
                 async for doc in cursor:
                     item = parse_item(collection, default_command, doc)
                     if item:
                         collection_items[item.mongo_id] = item
-                        total += 1
             except Exception:
+                failed_collections.append(collection)
                 log.exception("snapshot load failed for %s", collection)
+                # Never erase a previously healthy collection because of a transient Mongo timeout.
+                collection_items = dict(self.items_by_collection.get(collection, {}))
             new_items[collection] = collection_items
+            total += len(collection_items)
 
         async with self._lock:
             self.items_by_collection = new_items
             self._rebuild_indexes()
             self.loaded_at = time.time()
             self.count = total
-            self.last_incremental_sync_at = refresh_started_at
+            if not failed_collections:
+                self.last_incremental_sync_at = refresh_started_at
             self.last_full_refresh_monotonic = time.monotonic()
-        log.info("V3 snapshot refreshed: %s items", total)
+        if failed_collections:
+            log.warning("V3 snapshot refresh partial items=%s failed_collections=%s", total, failed_collections)
+        else:
+            log.info("V3 snapshot refreshed: %s items", total)
 
     async def incremental_sync(self) -> int:
         if self.last_incremental_sync_at is None:
@@ -421,17 +489,23 @@ class SnapshotCache:
         start_watermark = self.last_incremental_sync_at
         next_watermark = datetime.now(timezone.utc)
         changed: list[ItemSnapshot] = []
+        failed = False
         for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
             try:
-                cursor = db[collection].find({"updated_at": {"$gt": start_watermark, "$lte": next_watermark}})
+                cursor = db[collection].find(
+                    {"updated_at": {"$gt": start_watermark, "$lte": next_watermark}},
+                    projection=LOOKUP_PROJECTION,
+                ).batch_size(max(1, settings.snapshot_batch_size))
                 async for doc in cursor:
                     item = parse_item(collection, default_command, doc)
                     if item:
                         changed.append(item)
             except Exception:
+                failed = True
                 log.exception("incremental snapshot sync failed for %s", collection)
         if not changed:
-            self.last_incremental_sync_at = next_watermark
+            if not failed:
+                self.last_incremental_sync_at = next_watermark
             return 0
         async with self._lock:
             for item in changed:
@@ -440,8 +514,9 @@ class SnapshotCache:
             self._rebuild_indexes()
             self.count = sum(len(items) for items in self.items_by_collection.values())
             self.loaded_at = time.time()
-            self.last_incremental_sync_at = next_watermark
-        log.info("V3 incremental sync: %s changed items", len(changed))
+            if not failed:
+                self.last_incremental_sync_at = next_watermark
+        log.info("V3 incremental sync: %s changed items failed=%s", len(changed), failed)
         return len(changed)
 
     async def refresh_loop(self) -> None:

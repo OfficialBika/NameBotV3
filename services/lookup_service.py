@@ -11,7 +11,8 @@ from aiogram.types import Message
 
 from config import settings
 from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video, normalized_hamming
-from services.snapshot_cache import ItemSnapshot, snapshot
+from services.lookup_backend import lookup_backend
+from services.snapshot_cache import ItemSnapshot
 from services.source_resolver import output_command_from_message, resolve_lookup_scope, source_origin_key
 from utils.media import extract_media
 from utils.perf import perf
@@ -78,9 +79,9 @@ class LookupService:
                 # 0) Exact origin mapping. Useful when the exact archived/database channel post is forwarded.
                 origin = source_origin_key(source_message)
                 if origin:
-                    item = snapshot.exact_origin(origin, collections)
+                    item = await lookup_backend.exact_origin(origin, collections)
                     if not item and settings.v3_global_exact_fallback:
-                        item = snapshot.exact_origin(origin, None)
+                        item = await lookup_backend.exact_origin(origin, None)
                     if item:
                         hit = True
                         return self._done(self._with_command(item, output_command, source_message), "origin", started, 1.0)
@@ -93,10 +94,10 @@ class LookupService:
                     if cached:
                         hit = True
                         return self._done(self._with_command(cached, output_command, source_message), "uid_cache", started, 1.0)
-                    item = snapshot.exact_uid(file_uid, collections)
+                    item = await lookup_backend.exact_uid(file_uid, collections)
                     reason = "uid"
                     if not item and settings.v3_global_exact_fallback:
-                        item = snapshot.exact_uid(file_uid, None)
+                        item = await lookup_backend.exact_uid(file_uid, None)
                         reason = "uid_global"
                     if item:
                         hit = True
@@ -121,10 +122,10 @@ class LookupService:
                         return self._done(self._with_command(cached, output_command, source_message), "sha_cache", started, 1.0)
 
                 # 2) byte exact SHA aliases.
-                item = snapshot.exact_sha(media_hash.sha256 or "", collections)
+                item = await lookup_backend.exact_sha(media_hash.sha256 or "", collections)
                 reason = "sha"
                 if not item and settings.v3_global_exact_fallback:
-                    item = snapshot.exact_sha(media_hash.sha256 or "", None)
+                    item = await lookup_backend.exact_sha(media_hash.sha256 or "", None)
                     reason = "sha_global"
                 if item:
                     hit = True
@@ -133,10 +134,10 @@ class LookupService:
 
                 # 3) decoded canonical pixel hash exact match for photos.
                 if media.media_type == "photo" and media_hash.pixel_sha256:
-                    item = snapshot.exact_pixel_sha(media_hash.pixel_sha256, collections)
+                    item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, collections)
                     reason = "pixel_sha"
                     if not item and settings.v3_global_exact_fallback:
-                        item = snapshot.exact_pixel_sha(media_hash.pixel_sha256, None)
+                        item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, None)
                         reason = "pixel_sha_global"
                     if item:
                         hit = True
@@ -145,10 +146,10 @@ class LookupService:
 
                 # 4) exact sampled video signature.
                 if media.media_type == "video" and media_hash.video_signature:
-                    item = snapshot.exact_video_signature(media_hash.video_signature, collections)
+                    item = await lookup_backend.exact_video_signature(media_hash.video_signature, collections)
                     reason = "video_signature"
                     if not item and settings.v3_global_exact_fallback:
-                        item = snapshot.exact_video_signature(media_hash.video_signature, None)
+                        item = await lookup_backend.exact_video_signature(media_hash.video_signature, None)
                         reason = "video_signature_global"
                     if item:
                         hit = True
@@ -156,7 +157,7 @@ class LookupService:
                         return self._done(self._with_command(item, output_command, source_message), reason, started, 1.0)
 
                 # 5) source-scoped similarity.
-                item, confidence = self._match_similarity(media_hash, media.media_type, collections, global_mode=False)
+                item, confidence = await self._match_similarity(media_hash, media.media_type, collections, global_mode=False)
                 reason = "photo_multihash" if media.media_type == "photo" else "video_multiframe"
                 if item:
                     hit = True
@@ -165,7 +166,7 @@ class LookupService:
 
                 # 6) controlled global similarity fallback. Exact fallbacks above are always preferred.
                 if settings.v3_global_similarity_fallback and collections:
-                    item, confidence = self._match_similarity(media_hash, media.media_type, None, global_mode=True)
+                    item, confidence = await self._match_similarity(media_hash, media.media_type, None, global_mode=True)
                     if item:
                         hit = True
                         self._cache_exact(item, file_uid, sha_cache_key)
@@ -228,16 +229,16 @@ class LookupService:
     def _done(item: ItemSnapshot | None, reason: str, started: float, confidence: float = 0.0) -> LookupResult:
         return LookupResult(item, reason, (time.perf_counter() - started) * 1000, confidence)
 
-    def _match_similarity(self, media_hash: MediaHash, media_type: str, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
+    async def _match_similarity(self, media_hash: MediaHash, media_type: str, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
         if media_type == "photo":
-            return self._match_photo(media_hash, collections, global_mode=global_mode)
-        return self._match_video(media_hash, collections, global_mode=global_mode)
+            return await self._match_photo(media_hash, collections, global_mode=global_mode)
+        return await self._match_video(media_hash, collections, global_mode=global_mode)
 
-    def _match_photo(self, media_hash: MediaHash, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
+    async def _match_photo(self, media_hash: MediaHash, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
         phash_threshold = settings.photo_phash_threshold
         if collections == ["items_waifux_grab"] or collections is None:
             phash_threshold = max(settings.photo_phash_threshold, settings.waifux_photo_phash_threshold)
-        candidates = snapshot.photo_candidates(
+        candidates = await lookup_backend.photo_candidates(
             collections,
             media_hash.phash,
             media_hash.dhash,
@@ -287,8 +288,8 @@ class LookupService:
                 best_item, best_score = item, score
         return best_item, best_score
 
-    def _match_video(self, media_hash: MediaHash, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
-        candidates = snapshot.video_candidates(
+    async def _match_video(self, media_hash: MediaHash, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
+        candidates = await lookup_backend.video_candidates(
             collections,
             media_hash.duration_ms,
             settings.video_duration_tolerance_seconds,
