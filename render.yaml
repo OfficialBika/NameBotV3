@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: bika-lookup-v3
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: MODE
+        value: webhook
+      - key: USE_WEBHOOK
+        value: "true"
+      - key: PYTHON_VERSION
+        value: 3.11.11
