@@ -10,8 +10,8 @@ from aiogram.types import Message
 from config import settings
 from database.mongo import get_db
 from services.group_access import is_owner_or_sudo
+from services.lookup_backend import lookup_backend
 from services.lookup_service import lookup_service
-from services.snapshot_cache import snapshot
 from utils.perf import perf
 from utils.telegram_safe import safe_reply
 
@@ -42,8 +42,7 @@ def _uptime() -> str:
     return f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
 
 
-def _snapshot_age() -> str:
-    age = snapshot.age_seconds()
+def _age_text(age: int) -> str:
     if age < 0:
         return "N/A"
     if age < 60:
@@ -122,25 +121,50 @@ def _ram_info() -> tuple[str, str, str]:
         return "N/A", "N/A", "N/A"
 
 
+def _engine_lines(engine: dict) -> list[str]:
+    mode = str(engine.get("mode", "snapshot")).upper()
+    lines = [f"‣ Engine : {mode}"]
+    if mode == "SQLITE":
+        lines.extend(
+            [
+                f"‣ Index Ready : {'YES' if engine.get('ready') else 'NO'}",
+                f"‣ Building : {'YES' if engine.get('building') else 'NO'}",
+                f"‣ Index Items : {_fmt_int(int(engine.get('items', 0)))}",
+                f"‣ Photo Index : {_fmt_int(int(engine.get('photos', 0)))}",
+                f"‣ Video Index : {_fmt_int(int(engine.get('videos', 0)))}",
+                f"‣ Last Sync Age : {_age_text(int(engine.get('age_seconds', -1)))}",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"‣ Snapshot Items : {_fmt_int(int(engine.get('items', 0)))}",
+                f"‣ Snapshot Age : {_age_text(int(engine.get('age_seconds', -1)))}",
+            ]
+        )
+    return lines
+
+
 async def build_status_text(message: Message) -> str:
     users = await _count("known_users")
     groups = await _count_groups()
     approved = await _count_gapproved()
     blacklisted = await _count("blacklisted_users")
     bot_ping = await _ping_bot(message)
+    engine = await lookup_backend.stats()
     supported = [f"{idx}. {name} : {cmd}" for idx, (name, cmd) in enumerate(settings.supported_bots, start=1)]
+    engine_text = "\n".join(_engine_lines(engine))
     return (
         f"♻ {settings.status_title}\n"
-        f"‣ Total Media : {_fmt_int(snapshot.count)}\n"
+        f"‣ Total Media : {_fmt_int(int(engine.get('items', 0)))}\n"
         f"‣ Total Users : {_fmt_int(users)}\n"
         f"‣ Total Groups : {_fmt_int(groups)}\n"
         f"‣ GApproved Groups : {_fmt_int(approved)}\n"
         f"‣ Blacklisted Users : {_fmt_int(blacklisted)}\n\n"
-        "⚡ LOOKUP ENGINE V3\n"
-        f"‣ Snapshot Age : {_snapshot_age()}\n"
+        "⚡ LOOKUP ENGINE V3.1\n"
+        f"{engine_text}\n"
         f"‣ Result Cache : {len(lookup_service.result_cache)} / {settings.result_cache_max_items}\n"
-        f"‣ Bot Latency : {_fmt_ms(bot_ping)}\n"
-        f"‣ Incremental Sync : {settings.snapshot_incremental_sync_seconds}s\n\n"
+        f"‣ Bot Latency : {_fmt_ms(bot_ping)}\n\n"
         "🤖 Supported Bot List\n" + "\n".join(supported)
     )
 
@@ -150,6 +174,8 @@ async def build_stats_text(message: Message) -> str:
     bot_ping = await _ping_bot(message)
     used, left, total = _ram_info()
     p = perf.snapshot()
+    engine = await lookup_backend.stats()
+    engine_text = "\n".join(_engine_lines(engine))
     return (
         f"📊 {settings.stats_title}\n\n"
         f"‣ Uptime : {_uptime()}\n"
@@ -158,9 +184,8 @@ async def build_stats_text(message: Message) -> str:
         f"‣ RAM Used : {used}\n"
         f"‣ RAM Left : {left}\n"
         f"‣ RAM Total : {total}\n\n"
-        "⚡ LOOKUP ENGINE V3\n"
-        f"‣ Snapshot Age : {_snapshot_age()}\n"
-        f"‣ Total Media : {_fmt_int(snapshot.count)}\n"
+        "⚡ LOOKUP ENGINE V3.1\n"
+        f"{engine_text}\n"
         f"‣ Result Cache : {len(lookup_service.result_cache)}\n"
         f"‣ Lookup Hits : {_fmt_int(int(p.get('lookup_hits', 0)))}\n"
         f"‣ Lookup Misses : {_fmt_int(int(p.get('lookup_misses', 0)))}\n"
