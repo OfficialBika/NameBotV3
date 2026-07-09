@@ -1,24 +1,26 @@
-# V2 → V3 audit notes
+# V3.1 audit notes
 
-## Root causes found in V2
+## Earlier V2/V3 issues addressed
 
-1. `require_lookup_scope` could stop lookup before global exact UID/SHA checks.
-2. A wrong source scope could produce a false negative because global fallback was disabled by default.
-3. Snapshot refresh was a full periodic reload; new Adding Bot records could remain invisible until refresh.
-4. Photo matching used only pHash after exact UID/SHA.
-5. Video matching used only three pHash frames.
-6. The webhook runner performed Mongo ping and full snapshot loading in aiohttp startup before `web.run_app` bound the HTTP port.
-7. User/group tracking writes could occur on lookup paths too frequently.
+1. Source scope errors could cause false negatives before global exact fallback.
+2. Old records exposed only one UID/SHA while Adding Bot V3 can write alias arrays.
+3. Photo lookup relied too heavily on pHash alone.
+4. Video lookup used only three frame pHashes.
+5. Snapshot startup could transfer complete Mongo documents and time out on large collections.
+6. Render webhook startup previously performed expensive work before the HTTP port was bound.
 
-## V3 fixes
+## V3.1 dual-engine changes
 
-- Alias-aware exact indexes: `file_unique_ids[]`, `sha256_aliases[]`.
-- Exact `pixel_sha256`, `video_signature`, and origin mapping.
-- Source-scoped lookup first, global exact fallback second.
-- Multi-hash photo scoring and pure-Python multi-index candidate buckets.
-- Seven-point video fingerprint matching with duration buckets.
-- Incremental Mongo `updated_at` synchronization plus periodic full safety rebuild.
-- Render webhook port binding before Mongo/snapshot bootstrap.
-- `/healthz` liveness and `/readyz` readiness separation.
-- Environment-controlled branding with `Bika` defaults.
-- Throttled user/group touch writes and cached free-user checks.
+- Added `LOOKUP_ENGINE_MODE=snapshot|sqlite`, default `snapshot`.
+- Kept the RAM Snapshot engine and added Mongo projection/batch reads.
+- Added read-only direct exact Mongo lookup backend.
+- Added persistent SQLite WAL fingerprint index for similarity candidate search.
+- Added background first-build and `updated_at` delta synchronization for SQLite mode.
+- Added engine-aware `/refresh` and SQLite `/rebuildindex`.
+- Added engine-aware `/status`, `/stats`, `/healthz`, and `/readyz` reporting.
+- Kept result and miss TTL caches in RAM for both modes.
+- Kept MongoDB as the source of truth; SQLite is rebuildable and disposable.
+
+## SQLite mode safety model
+
+MongoDB operations performed by the lookup engine are reads only. The SQLite database stores a local secondary lookup index. Removing the SQLite file cannot remove or modify MongoDB card data.

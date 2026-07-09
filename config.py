@@ -263,9 +263,14 @@ class Settings:
 
     mongo_uri: str = os.getenv("MONGO_URI", "")
     db_name: str = os.getenv("DB_NAME", "waifu_adding_v2")
-    mongo_server_selection_timeout_ms: int = _int("MONGO_SERVER_SELECTION_TIMEOUT_MS", 8000)
-    mongo_connect_timeout_ms: int = _int("MONGO_CONNECT_TIMEOUT_MS", 8000)
-    mongo_socket_timeout_ms: int = _int("MONGO_SOCKET_TIMEOUT_MS", 60000)
+    mongo_server_selection_timeout_ms: int = _int("MONGO_SERVER_SELECTION_TIMEOUT_MS", 30000)
+    mongo_connect_timeout_ms: int = _int("MONGO_CONNECT_TIMEOUT_MS", 30000)
+    mongo_socket_timeout_ms: int = _int("MONGO_SOCKET_TIMEOUT_MS", 300000)
+    mongo_exact_query_timeout_ms: int = _int("MONGO_EXACT_QUERY_TIMEOUT_MS", 5000)
+
+    # Lookup backend selector. snapshot keeps the existing full-RAM engine; sqlite uses
+    # MongoDB for exact lookups and a local persistent SQLite fingerprint index for similarity.
+    lookup_engine_mode: str = os.getenv("LOOKUP_ENGINE_MODE", "snapshot").strip().lower() or "snapshot"
 
     mode: str = os.getenv("MODE", "polling").lower()
     use_webhook: bool = _bool("USE_WEBHOOK", False)
@@ -304,6 +309,16 @@ class Settings:
     snapshot_incremental_sync_seconds: int = _int("SNAPSHOT_INCREMENTAL_SYNC_SECONDS", 10)
     snapshot_full_rebuild_seconds: int = _int("SNAPSHOT_FULL_REBUILD_SECONDS", 3600)
     snapshot_refresh_seconds: int = _int("SNAPSHOT_REFRESH_SECONDS", 300)  # legacy env compatibility
+    snapshot_batch_size: int = _int("SNAPSHOT_BATCH_SIZE", 500)
+
+    # SQLite hybrid lookup backend. The SQLite DB is a rebuildable secondary index only.
+    sqlite_index_path: str = os.getenv("SQLITE_INDEX_PATH", "data/fingerprint_index.db").strip() or "data/fingerprint_index.db"
+    sqlite_sync_seconds: int = _int("SQLITE_SYNC_SECONDS", 10)
+    sqlite_build_on_start: bool = _bool("SQLITE_BUILD_ON_START", True)
+    sqlite_rebuild_on_start: bool = _bool("SQLITE_REBUILD_ON_START", False)
+    sqlite_batch_size: int = _int("SQLITE_BATCH_SIZE", 500)
+    sqlite_busy_timeout_ms: int = _int("SQLITE_BUSY_TIMEOUT_MS", 5000)
+    sqlite_full_rebuild_seconds: int = _int("SQLITE_FULL_REBUILD_SECONDS", 0)
 
     result_cache_max_items: int = _int("RESULT_CACHE_MAX_ITEMS", 150000)
     result_cache_ttl_seconds: int = _int("RESULT_CACHE_TTL_SECONDS", 7200)
@@ -321,6 +336,7 @@ class Settings:
     waifux_video_frame_threshold: int = _int("WAIFUX_VIDEO_FRAME_THRESHOLD", 14)
     waifux_video_avg_threshold: int = _int("WAIFUX_VIDEO_AVG_THRESHOLD", 16)
     video_duration_tolerance_seconds: int = _int("VIDEO_DURATION_TOLERANCE_SECONDS", 4)
+    video_max_candidates: int = _int("VIDEO_MAX_CANDIDATES", 5000)
     video_sample_points: Tuple[float, ...] = field(default_factory=lambda: _sample_points("VIDEO_SAMPLE_POINTS", (0.2, 0.5, 0.8)))
     video_v3_sample_points: Tuple[float, ...] = field(default_factory=lambda: _sample_points("VIDEO_V3_SAMPLE_POINTS", (0.05, 0.15, 0.30, 0.50, 0.70, 0.85, 0.95)))
 

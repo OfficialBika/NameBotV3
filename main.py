@@ -18,7 +18,9 @@ from config import settings
 from database.indexes import ensure_indexes
 from database.mongo import close_mongo, init_mongo
 from handlers import admin, auto_lookup, free, manual_lookup, start, status
+from services.lookup_backend import lookup_backend
 from services.snapshot_cache import snapshot
+from services.sqlite_fingerprint_index import sqlite_index
 
 try:
     import uvloop
@@ -68,14 +70,28 @@ def build_dispatcher() -> Dispatcher:
 
 
 async def bootstrap_core(bot: Bot, *, webhook: bool) -> list[asyncio.Task]:
-    """Heavy bootstrap. In webhook mode this runs only after the HTTP port is bound."""
+    """Initialize the selected lookup backend after HTTP bind in webhook mode."""
     await init_mongo()
     await ensure_indexes()
     tasks: list[asyncio.Task] = []
-    if settings.snapshot_startup_load:
-        await snapshot.refresh()
-    if settings.snapshot_background_refresh:
-        tasks.append(asyncio.create_task(snapshot.refresh_loop(), name="snapshot-refresh-loop"))
+
+    if lookup_backend.mode == "sqlite":
+        # Open is fast. Initial/full index build runs in the background, so exact Mongo
+        # lookup and Telegram handling can start immediately.
+        await sqlite_index.open()
+        if settings.sqlite_sync_seconds > 0:
+            # sync_loop performs the initial background build when required, then delta syncs.
+            tasks.append(asyncio.create_task(sqlite_index.sync_loop(), name="sqlite-sync-loop"))
+        elif settings.sqlite_build_on_start:
+            tasks.append(asyncio.create_task(sqlite_index.ensure_built(), name="sqlite-initial-build"))
+        log.info("Lookup engine selected: SQLITE hybrid path=%s", settings.sqlite_index_path)
+    else:
+        if settings.snapshot_startup_load:
+            await snapshot.refresh()
+        if settings.snapshot_background_refresh:
+            tasks.append(asyncio.create_task(snapshot.refresh_loop(), name="snapshot-refresh-loop"))
+        log.info("Lookup engine selected: SNAPSHOT RAM items=%s", snapshot.count)
+
     if webhook:
         if not settings.public_url:
             raise RuntimeError("PUBLIC_URL is required for webhook mode")
@@ -89,6 +105,15 @@ async def bootstrap_core(bot: Bot, *, webhook: bool) -> list[asyncio.Task]:
     return tasks
 
 
+async def shutdown_core(background: list[asyncio.Task]) -> None:
+    for task in background:
+        task.cancel()
+    await asyncio.gather(*background, return_exceptions=True)
+    if lookup_backend.mode == "sqlite":
+        await sqlite_index.close()
+    await close_mongo()
+
+
 async def run_polling() -> None:
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher()
@@ -98,10 +123,7 @@ async def run_polling() -> None:
         background = await bootstrap_core(bot, webhook=False)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        for task in background:
-            task.cancel()
-        await asyncio.gather(*background, return_exceptions=True)
-        await close_mongo()
+        await shutdown_core(background)
         await bot.session.close()
 
 
@@ -110,13 +132,7 @@ def _webhook_path() -> str:
 
 
 async def run_webhook() -> None:
-    """Render-friendly webhook runner.
-
-    The old V2 app awaited Mongo ping + full snapshot load inside aiohttp startup,
-    so Render could wait a long time before seeing an open PORT. V3 binds PORT first,
-    serves /healthz immediately, then performs Mongo/snapshot bootstrap concurrently.
-    Webhook updates receive HTTP 503 until readiness and Telegram retries them.
-    """
+    """Render-friendly runner: bind HTTP first, then bootstrap Mongo/backend/webhook."""
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher()
     path = _webhook_path()
@@ -132,22 +148,23 @@ async def run_webhook() -> None:
     app["bootstrap_error"] = ""
 
     async def health(_request: web.Request) -> web.Response:
+        engine = await lookup_backend.stats()
         return web.json_response(
             {
                 "ok": True,
                 "service": settings.service_name,
                 "status": "ready" if app.get("ready") else "starting",
-                "snapshot_items": snapshot.count,
-                "snapshot_age_seconds": snapshot.age_seconds(),
+                "lookup_engine": engine,
                 "error": app.get("bootstrap_error", ""),
             }
         )
 
     async def ready(_request: web.Request) -> web.Response:
+        engine = await lookup_backend.stats()
         if app.get("ready"):
-            return web.json_response({"ok": True, "status": "ready", "items": snapshot.count})
+            return web.json_response({"ok": True, "status": "ready", "lookup_engine": engine})
         return web.json_response(
-            {"ok": False, "status": "starting", "error": app.get("bootstrap_error", "")},
+            {"ok": False, "status": "starting", "lookup_engine": engine, "error": app.get("bootstrap_error", "")},
             status=503,
         )
 
@@ -182,7 +199,8 @@ async def run_webhook() -> None:
         try:
             background = await bootstrap_core(bot, webhook=True)
             app["ready"] = True
-            log.info("Webhook service READY | snapshot_items=%s", snapshot.count)
+            engine = await lookup_backend.stats()
+            log.info("Webhook service READY | engine=%s items=%s", engine.get("mode"), engine.get("items"))
         except Exception as exc:
             app["bootstrap_error"] = str(exc)
             log.exception("Webhook bootstrap failed after port bind")
@@ -191,11 +209,8 @@ async def run_webhook() -> None:
         await stop_event.wait()
     finally:
         app["ready"] = False
-        for task in background:
-            task.cancel()
-        await asyncio.gather(*background, return_exceptions=True)
         try:
-            await close_mongo()
+            await shutdown_core(background)
         finally:
             try:
                 await bot.session.close()
@@ -207,6 +222,8 @@ def main() -> None:
     setup_logging()
     if not settings.bot_token:
         raise RuntimeError("BOT_TOKEN is empty")
+    if settings.lookup_engine_mode not in {"snapshot", "sqlite"}:
+        log.warning("Invalid LOOKUP_ENGINE_MODE=%s; snapshot fallback will be used", settings.lookup_engine_mode)
     if uvloop and sys.platform != "win32":
         uvloop.install()
     webhook = settings.use_webhook or settings.mode == "webhook"
