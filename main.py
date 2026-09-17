@@ -99,7 +99,7 @@ async def bootstrap_core(bot: Bot, *, webhook: bool) -> list[asyncio.Task]:
         await bot.set_webhook(
             settings.public_url + webhook_path,
             secret_token=settings.webhook_secret,
-            drop_pending_updates=False,
+            drop_pending_updates=True,
         )
         log.info("Webhook configured: %s%s", settings.public_url, webhook_path)
     return tasks
