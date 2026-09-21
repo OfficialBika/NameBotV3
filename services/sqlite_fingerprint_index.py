@@ -409,6 +409,41 @@ class SQLiteFingerprintIndex:
                     changed += len(items)
         return changed
 
+    async def delete_event_items(self, keys: list[tuple[str, str]]) -> int:
+        """Remove only documents named by delete events; no full rebuild required."""
+        if not keys:
+            return 0
+        await self.open()
+        grouped: dict[str, list[str]] = {}
+        for collection, mongo_id in keys:
+            grouped.setdefault(collection, []).append(str(mongo_id))
+        removed = 0
+        async with self._build_lock:
+            for collection, raw_ids in grouped.items():
+                ids = list(dict.fromkeys(raw_ids))
+                marks = ",".join("?" for _ in ids)
+                cursor = await self.db.execute(
+                    f"SELECT COUNT(*) FROM fingerprint_items WHERE collection=? AND mongo_id IN ({marks})",
+                    [collection, *ids],
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                removed += int(row[0] or 0) if row else 0
+                await self.db.execute(
+                    f"DELETE FROM exact_keys WHERE collection=? AND mongo_id IN ({marks})",
+                    [collection, *ids],
+                )
+                await self.db.execute(
+                    f"DELETE FROM hash_chunks WHERE collection=? AND mongo_id IN ({marks})",
+                    [collection, *ids],
+                )
+                await self.db.execute(
+                    f"DELETE FROM fingerprint_items WHERE collection=? AND mongo_id IN ({marks})",
+                    [collection, *ids],
+                )
+            await self.db.commit()
+        return removed
+
     async def incremental_sync(self) -> int:
         await self.open()
         if self.building:
