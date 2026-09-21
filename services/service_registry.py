@@ -21,7 +21,6 @@ async def publish_status(*, lookup_stats: dict[str, Any] | None = None) -> None:
     """Publish a small runtime contract so sibling services can detect NameBot updates."""
     now = datetime.now(timezone.utc)
     doc = {
-        "_id": SERVICE_ID,
         "service": SERVICE_ID,
         "version": VERSION,
         "git_commit": GIT_COMMIT,
