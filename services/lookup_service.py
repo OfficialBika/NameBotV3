@@ -208,6 +208,10 @@ class LookupService:
                 log.info("download failed: %s", exc)
                 return None
 
+    def invalidate_lookup_cache(self) -> None:
+        self.result_cache.clear()
+        self.miss_cache.clear()
+
     @staticmethod
     def _filter_tag(collections: list[str] | None) -> str:
         return "+".join(collections) if collections else "all"
