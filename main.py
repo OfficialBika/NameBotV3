@@ -21,6 +21,7 @@ from handlers import admin, auto_lookup, free, manual_lookup, start, status
 from services.lookup_backend import lookup_backend
 from services.snapshot_cache import snapshot
 from services.sqlite_fingerprint_index import sqlite_index
+from services.service_registry import heartbeat_loop, publish_status
 
 try:
     import uvloop
@@ -74,6 +75,14 @@ async def bootstrap_core(bot: Bot, *, webhook: bool) -> list[asyncio.Task]:
     await init_mongo()
     await ensure_indexes()
     tasks: list[asyncio.Task] = []
+
+    # Publish runtime/backend state so the sibling Adding Helper can detect
+    # NameBot V3 restarts, version changes, and lookup-engine changes.
+    try:
+        await publish_status(lookup_stats=await lookup_backend.stats())
+        tasks.append(asyncio.create_task(heartbeat_loop(lookup_backend), name="namebot-service-heartbeat"))
+    except Exception:
+        log.exception("NameBot service registry bootstrap failed")
 
     if lookup_backend.mode == "sqlite":
         # Open is fast. Initial/full index build runs in the background, so exact Mongo
