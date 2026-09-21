@@ -388,7 +388,7 @@ class SQLiteFingerprintIndex:
         changed = 0
         async with self._build_lock:
             for collection, raw_ids in grouped.items():
-            values: list[Any] = list(dict.fromkeys(raw_ids))
+                values: list[Any] = list(dict.fromkeys(raw_ids))
                 try:
                     from bson import ObjectId
                     values.extend(ObjectId(value) for value in values if ObjectId.is_valid(value))
