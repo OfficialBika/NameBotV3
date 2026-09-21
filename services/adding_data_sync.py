@@ -48,9 +48,9 @@ class AddingDataSync:
             return
         has_delete = any(event.get("operation") == "delete" for event in events)
 
-        # The existing incremental synchronizers use updated_at and are safe to
-        # replay. Deletions cannot be discovered from updated_at, so a delete
-        # signal forces a complete rebuild.
+        # Events identify the exact MongoDB documents that changed, so normal
+        # updates never scan every collection. Deletes are removed directly from
+        # the secondary index; full rebuild is reserved for an event-history gap.
         keys = [
             (str(event.get("collection") or ""), str(event.get("document_id") or ""))
             for event in events
@@ -61,7 +61,11 @@ class AddingDataSync:
             for event in events
             if event.get("operation") == "delete" and event.get("collection") and event.get("document_id")
         ]
-        upsert_keys = [key for key, event in zip(keys, events) if event.get("operation") != "delete"]
+        upsert_keys = [
+            (str(event.get("collection") or ""), str(event.get("document_id") or ""))
+            for event in events
+            if event.get("operation") != "delete" and event.get("collection") and event.get("document_id")
+        ]
 
         if settings.lookup_engine_mode == "sqlite":
             if delete_keys:
