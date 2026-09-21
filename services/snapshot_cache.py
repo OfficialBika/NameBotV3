@@ -511,6 +511,22 @@ class SnapshotCache:
                 self.loaded_at = time.time()
         return changed
 
+    async def delete_event_items(self, keys: list[tuple[str, str]]) -> int:
+        if not keys:
+            return 0
+        removed = 0
+        async with self._lock:
+            for collection, mongo_id in keys:
+                items = self.items_by_collection.get(collection, {})
+                if str(mongo_id) in items:
+                    items.pop(str(mongo_id), None)
+                    removed += 1
+            if removed:
+                self._rebuild_indexes()
+                self.count = sum(len(items) for items in self.items_by_collection.values())
+                self.loaded_at = time.time()
+        return removed
+
     async def incremental_sync(self) -> int:
         if self.last_incremental_sync_at is None:
             await self.refresh()
