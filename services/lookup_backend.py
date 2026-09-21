@@ -27,31 +27,36 @@ class LookupBackend:
     ) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             return await mongo_exact_lookup.exact_origin(key, collections)
-        return snapshot.exact_origin(key, collections)
+        item = snapshot.exact_origin(key, collections)
+        return item or await mongo_exact_lookup.exact_origin(key, collections)
 
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             return await mongo_exact_lookup.exact_uid(uid, collections)
-        return snapshot.exact_uid(uid, collections)
+        item = snapshot.exact_uid(uid, collections)
+        return item or await mongo_exact_lookup.exact_uid(uid, collections)
 
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             return await mongo_exact_lookup.exact_sha(sha, collections)
-        return snapshot.exact_sha(sha, collections)
+        item = snapshot.exact_sha(sha, collections)
+        return item or await mongo_exact_lookup.exact_sha(sha, collections)
 
     async def exact_pixel_sha(
         self, sha: str, collections: list[str] | None = None
     ) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             return await mongo_exact_lookup.exact_pixel_sha(sha, collections)
-        return snapshot.exact_pixel_sha(sha, collections)
+        item = snapshot.exact_pixel_sha(sha, collections)
+        return item or await mongo_exact_lookup.exact_pixel_sha(sha, collections)
 
     async def exact_video_signature(
         self, signature: str, collections: list[str] | None = None
     ) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             return await mongo_exact_lookup.exact_video_signature(signature, collections)
-        return snapshot.exact_video_signature(signature, collections)
+        item = snapshot.exact_video_signature(signature, collections)
+        return item or await mongo_exact_lookup.exact_video_signature(signature, collections)
 
     async def photo_candidates(
         self,
