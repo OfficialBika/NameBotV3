@@ -74,6 +74,17 @@ class SQLiteFingerprintIndex:
             CREATE INDEX IF NOT EXISTS idx_fp_video_duration
                 ON fingerprint_items(collection, media_type, duration_bucket);
 
+            CREATE TABLE IF NOT EXISTS exact_keys (
+                collection TEXT NOT NULL,
+                key_type TEXT NOT NULL,
+                key_value TEXT NOT NULL,
+                mongo_id TEXT NOT NULL,
+                PRIMARY KEY (collection, key_type, key_value, mongo_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_exact_keys_lookup
+                ON exact_keys(key_type, key_value, collection);
+
             CREATE TABLE IF NOT EXISTS hash_chunks (
                 collection TEXT NOT NULL,
                 field TEXT NOT NULL,
@@ -284,6 +295,31 @@ class SQLiteFingerprintIndex:
                     ),
                 )
                 await self.db.execute(
+                    "DELETE FROM exact_keys WHERE collection=? AND mongo_id=?",
+                    (item.collection, item.mongo_id),
+                )
+                exact_rows = []
+                for key_type, values in (
+                    ("uid", item.all_uids),
+                    ("sha", item.all_shas),
+                    ("pixel_sha", (item.pixel_sha256,) if item.pixel_sha256 else ()),
+                    ("video_signature", (item.video_signature,) if item.video_signature else ()),
+                ):
+                    for value in values:
+                        if value:
+                            exact_rows.append((item.collection, key_type, str(value), item.mongo_id))
+                if item.origin_chat_id is not None and item.origin_message_id is not None:
+                    exact_rows.append(
+                        (item.collection, "origin",
+                         f"{item.origin_chat_id}:{item.origin_message_id}", item.mongo_id)
+                    )
+                if exact_rows:
+                    await self.db.executemany(
+                        "INSERT OR REPLACE INTO exact_keys(collection,key_type,key_value,mongo_id) "
+                        "VALUES(?,?,?,?)",
+                        exact_rows,
+                    )
+                await self.db.execute(
                     "DELETE FROM hash_chunks WHERE collection=? AND mongo_id=?",
                     (item.collection, item.mongo_id),
                 )
@@ -307,6 +343,39 @@ class SQLiteFingerprintIndex:
                         chunk_rows,
                     )
             await self.db.commit()
+
+    async def _exact_lookup(self, key_type: str, key_value: str,
+                            collections: list[str] | None = None) -> ItemSnapshot | None:
+        if self.db is None or not self.ready or not key_value:
+            return None
+        selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
+        if not selected:
+            return None
+        marks = ",".join("?" for _ in selected)
+        cursor = await self.db.execute(
+            f"SELECT fi.item_json FROM exact_keys ek "
+            f"JOIN fingerprint_items fi ON fi.collection=ek.collection AND fi.mongo_id=ek.mongo_id "
+            f"WHERE ek.key_type=? AND ek.key_value=? AND ek.collection IN ({marks}) LIMIT 1",
+            [key_type, str(key_value), *selected],
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self._item_from_json(str(row["item_json"])) if row else None
+
+    async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
+        return await self._exact_lookup("uid", uid, collections)
+
+    async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
+        return await self._exact_lookup("sha", sha, collections)
+
+    async def exact_pixel_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
+        return await self._exact_lookup("pixel_sha", sha, collections)
+
+    async def exact_video_signature(self, signature: str, collections: list[str] | None = None) -> ItemSnapshot | None:
+        return await self._exact_lookup("video_signature", signature, collections)
+
+    async def exact_origin(self, key: tuple[int, int], collections: list[str] | None = None) -> ItemSnapshot | None:
+        return await self._exact_lookup("origin", f"{int(key[0])}:{int(key[1])}", collections)
 
     async def incremental_sync(self) -> int:
         await self.open()
