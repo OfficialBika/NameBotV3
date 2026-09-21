@@ -382,32 +382,31 @@ class SQLiteFingerprintIndex:
         if not keys:
             return 0
         await self.open()
-        if self.building:
-            return 0
         grouped: dict[str, list[str]] = {}
         for collection, mongo_id in keys:
             grouped.setdefault(collection, []).append(str(mongo_id))
         changed = 0
-        for collection, raw_ids in grouped.items():
+        async with self._build_lock:
+            for collection, raw_ids in grouped.items():
             values: list[Any] = list(dict.fromkeys(raw_ids))
-            try:
-                from bson import ObjectId
-                values.extend(ObjectId(value) for value in values if ObjectId.is_valid(value))
-            except Exception:
-                pass
-            cursor = get_db()[collection].find(
-                {"_id": {"$in": values}},
-                projection=LOOKUP_PROJECTION,
-            )
-            items: list[ItemSnapshot] = []
-            default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
-            async for doc in cursor:
-                item = parse_item(collection, default_command, doc)
-                if item:
-                    items.append(item)
-            if items:
-                await self.upsert_items(items)
-                changed += len(items)
+                try:
+                    from bson import ObjectId
+                    values.extend(ObjectId(value) for value in values if ObjectId.is_valid(value))
+                except Exception:
+                    pass
+                cursor = get_db()[collection].find(
+                    {"_id": {"$in": values}},
+                    projection=LOOKUP_PROJECTION,
+                )
+                items: list[ItemSnapshot] = []
+                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
+                async for doc in cursor:
+                    item = parse_item(collection, default_command, doc)
+                    if item:
+                        items.append(item)
+                if items:
+                    await self.upsert_items(items)
+                    changed += len(items)
         return changed
 
     async def incremental_sync(self) -> int:
