@@ -105,6 +105,9 @@ SQLITE_FULL_REBUILD_SECONDS=0
 
 # Direct exact Mongo query guard
 MONGO_EXACT_QUERY_TIMEOUT_MS=5000
+
+# Private lookup diagnostic log group (not shown to users)
+LOOKUP_LOG_GROUP_ID=-1001234567890
 ```
 
 For a VPS where the full snapshot is timing out or using too much RAM, use:
