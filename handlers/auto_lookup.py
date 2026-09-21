@@ -12,6 +12,7 @@ from locales import en, my
 from services.force_join import require_join
 from services.group_access import can_auto_lookup, remember_user
 from services.lookup_service import lookup_service
+from services.lookup_diagnostic_logger import send_lookup_miss
 from services.result_formatter import format_result, result_buttons
 from services.source_blocker import blocked_source_text, is_blocked_source
 from utils.telegram_safe import safe_reply
@@ -77,8 +78,15 @@ async def auto_lookup(message: Message) -> None:
         return
     try:
         result = await lookup_service.lookup_message(message.bot, message, manual=False)
-    except Exception:
+    except Exception as exc:
         log.exception("auto lookup failed")
+        await send_lookup_miss(
+            message.bot,
+            message,
+            reason="handler_exception",
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+            error=str(exc),
+        )
         if settings.auto_lookup_reply_not_found:
             await safe_reply(message, f"{my.NOT_FOUND}\n{en.NOT_FOUND}")
         return
@@ -88,4 +96,15 @@ async def auto_lookup(message: Message) -> None:
         await safe_reply(message, blocked_source_text())
     elif settings.auto_lookup_reply_not_found and result.reason != "no_media":
         await safe_reply(message, f"{my.NOT_FOUND}\n{en.NOT_FOUND}")
+
+    # Diagnostics go only to the private log group. User-facing output above is unchanged.
+    if not result.item and result.reason not in {"blocked_source", "no_media"}:
+        await send_lookup_miss(
+            message.bot,
+            message,
+            reason=result.reason or "not_found",
+            confidence=result.confidence,
+            elapsed_ms=result.elapsed_ms or (time.perf_counter() - started) * 1000,
+        )
+
     log.debug("lookup reason=%s confidence=%.3f elapsed=%.1fms", result.reason, result.confidence, (time.perf_counter() - started) * 1000)
