@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -14,7 +15,26 @@ log = logging.getLogger(__name__)
 SERVICE_ID = "namebotv3"
 HEARTBEAT_SECONDS = max(5, int(os.getenv("SERVICE_HEARTBEAT_SECONDS", "15") or 15))
 VERSION = os.getenv("SERVICE_VERSION", "main").strip() or "main"
-GIT_COMMIT = os.getenv("GIT_COMMIT", "").strip()
+def _detect_git_commit() -> str:
+    configured = os.getenv("GIT_COMMIT", "").strip()
+    if configured:
+        return configured
+    for env_name in ("RENDER_GIT_COMMIT", "SOURCE_VERSION"):
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return ""
+
+
+GIT_COMMIT = _detect_git_commit()
 
 
 async def publish_status(*, lookup_stats: dict[str, Any] | None = None) -> None:
