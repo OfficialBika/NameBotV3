@@ -481,6 +481,36 @@ class SnapshotCache:
         else:
             log.info("V3 snapshot refreshed: %s items", total)
 
+    async def sync_event_items(self, keys: list[tuple[str, str]]) -> int:
+        """Refresh only documents named by Adding Bot change events."""
+        if not keys:
+            return 0
+        db = get_db()
+        grouped: dict[str, list[str]] = {}
+        for collection, mongo_id in keys:
+            grouped.setdefault(collection, []).append(str(mongo_id))
+        changed = 0
+        async with self._lock:
+            for collection, raw_ids in grouped.items():
+                values: list[Any] = list(dict.fromkeys(raw_ids))
+                try:
+                    from bson import ObjectId
+                    values.extend(ObjectId(value) for value in values if ObjectId.is_valid(value))
+                except Exception:
+                    pass
+                cursor = db[collection].find({"_id": {"$in": values}}, projection=LOOKUP_PROJECTION)
+                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
+                async for doc in cursor:
+                    item = parse_item(collection, default_command, doc)
+                    if item:
+                        self.items_by_collection.setdefault(collection, {})[item.mongo_id] = item
+                        changed += 1
+            if changed:
+                self._rebuild_indexes()
+                self.count = sum(len(items) for items in self.items_by_collection.values())
+                self.loaded_at = time.time()
+        return changed
+
     async def incremental_sync(self) -> int:
         if self.last_incremental_sync_at is None:
             await self.refresh()
