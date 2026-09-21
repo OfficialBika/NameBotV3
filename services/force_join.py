@@ -20,8 +20,16 @@ _join_cache: TTLCache[str, bool] = TTLCache(50000, settings.force_join_positive_
 _prompt_cache: TTLCache[str, bool] = TTLCache(100000, settings.force_join_prompt_throttle_seconds)
 
 
+def _force_join_channels() -> list[str]:
+    return list(getattr(settings, "force_join_channels", []) or [])
+
+
+def _force_join_enabled() -> bool:
+    return bool(getattr(settings, "enable_force_join", True))
+
+
 def _join_key(user_id: int) -> str:
-    return f"forcejoin:{user_id}:{'|'.join(settings.force_join_channels)}"
+    return f"forcejoin:{user_id}:{'|'.join(_force_join_channels())}"
 
 
 def _prompt_key(message: Message) -> str:
@@ -44,7 +52,7 @@ async def bot_username(bot: Bot) -> str:
 
 
 async def _check_all_channels(bot: Bot, user_id: int) -> bool:
-    for channel in settings.force_join_channels:
+    for channel in _force_join_channels():
         try:
             member = await bot.get_chat_member(channel, user_id)
             if member.status in {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}:
@@ -56,7 +64,7 @@ async def _check_all_channels(bot: Bot, user_id: int) -> bool:
 
 
 async def has_joined(bot: Bot, user_id: int, *, force_refresh: bool = False) -> bool:
-    if not settings.enable_force_join or not settings.force_join_channels:
+    if not _force_join_enabled() or not _force_join_channels():
         return True
     key = _join_key(user_id)
     if not force_refresh and _join_cache.get(key) is True:
@@ -70,7 +78,7 @@ async def has_joined(bot: Bot, user_id: int, *, force_refresh: bool = False) -> 
 
 
 def dm_force_join_keyboard() -> InlineKeyboardMarkup:
-    rows = [[_channel_button(channel)] for channel in settings.force_join_channels]
+    rows = [[_channel_button(channel)] for channel in _force_join_channels()]
     if settings.support_group_username:
         rows.append([InlineKeyboardButton(text="👥 Support Group", url=f"https://t.me/{settings.support_group_username.lstrip('@')}")])
     rows.append([InlineKeyboardButton(text="✅ Joined / Check Again", callback_data="force_join_check")])
