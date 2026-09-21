@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 
 from config import settings
@@ -119,7 +120,7 @@ class AddingDataSync:
         # Never trust an old local cursor after process restart. The current
         # MongoDB state is authoritative and the normal startup load already
         # populated the selected lookup engine.
-        self.last_version = await self._state_version()
+        self.last_version = 0
         while True:
             try:
                 await asyncio.sleep(max(1, int(os.getenv("ADDING_DATA_SYNC_POLL_SECONDS", str(DEFAULT_POLL_SECONDS)) or DEFAULT_POLL_SECONDS))
