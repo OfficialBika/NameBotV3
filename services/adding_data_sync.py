@@ -144,7 +144,17 @@ class AddingDataSync:
         self.last_version = 0
         while True:
             try:
-                await asyncio.sleep(max(1, int(os.getenv("ADDING_DATA_SYNC_POLL_SECONDS", str(DEFAULT_POLL_SECONDS)) or DEFAULT_POLL_SECONDS))
+                poll_seconds = max(
+                    1,
+                    int(
+                        os.getenv(
+                            "ADDING_DATA_SYNC_POLL_SECONDS",
+                            str(DEFAULT_POLL_SECONDS),
+                        )
+                        or DEFAULT_POLL_SECONDS
+                    ),
+                )
+                await asyncio.sleep(poll_seconds)
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
