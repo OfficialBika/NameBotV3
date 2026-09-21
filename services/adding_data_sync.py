@@ -56,17 +56,23 @@ class AddingDataSync:
             for event in events
             if event.get("collection") and event.get("document_id")
         ]
+        delete_keys = [
+            (str(event.get("collection") or ""), str(event.get("document_id") or ""))
+            for event in events
+            if event.get("operation") == "delete" and event.get("collection") and event.get("document_id")
+        ]
+        upsert_keys = [key for key, event in zip(keys, events) if event.get("operation") != "delete"]
 
         if settings.lookup_engine_mode == "sqlite":
-            if has_delete:
-                await sqlite_index.build_full(clear_existing=True)
-            else:
-                await sqlite_index.sync_event_items(keys)
+            if delete_keys:
+                await sqlite_index.delete_event_items(delete_keys)
+            if upsert_keys:
+                await sqlite_index.sync_event_items(upsert_keys)
         else:
-            if has_delete:
-                await snapshot.refresh()
-            else:
-                await snapshot.sync_event_items(keys)
+            if delete_keys:
+                await snapshot.delete_event_items(delete_keys)
+            if upsert_keys:
+                await snapshot.sync_event_items(upsert_keys)
 
         # A write can change a UID/SHA/name result that is already cached.
         # Invalidate both hits and misses immediately after applying the event.
