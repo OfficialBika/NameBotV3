@@ -9,6 +9,7 @@ from config import settings
 from database.mongo import get_db
 from services.snapshot_cache import snapshot
 from services.sqlite_fingerprint_index import sqlite_index
+from services.lookup_service import lookup_service
 
 log = logging.getLogger(__name__)
 
@@ -50,16 +51,26 @@ class AddingDataSync:
         # The existing incremental synchronizers use updated_at and are safe to
         # replay. Deletions cannot be discovered from updated_at, so a delete
         # signal forces a complete rebuild.
+        keys = [
+            (str(event.get("collection") or ""), str(event.get("document_id") or ""))
+            for event in events
+            if event.get("collection") and event.get("document_id")
+        ]
+
         if settings.lookup_engine_mode == "sqlite":
             if has_delete:
                 await sqlite_index.build_full(clear_existing=True)
             else:
-                await sqlite_index.incremental_sync()
+                await sqlite_index.sync_event_items(keys)
         else:
             if has_delete:
                 await snapshot.refresh()
             else:
-                await snapshot.incremental_sync()
+                await snapshot.sync_event_items(keys)
+
+        # A write can change a UID/SHA/name result that is already cached.
+        # Invalidate both hits and misses immediately after applying the event.
+        lookup_service.invalidate_lookup_cache()
 
         self.last_event_at = datetime.now(timezone.utc)
         log.info(
