@@ -282,7 +282,7 @@ class Settings:
 
     support_group_username: str = os.getenv("SUPPORT_GROUP_USERNAME", "")
     support_group_id: int = _int("SUPPORT_GROUP_ID", 0)
-    force_join_channels: List[str] = field(default_factory=lambda: _csv("FORCE_JOIN_CHANNELS"))
+    # Private diagnostics group. User-facing lookup replies are unchanged.\n    lookup_log_group_id: int = _int("LOOKUP_LOG_GROUP_ID", 0)\n    force_join_channels: List[str] = field(default_factory=lambda: _csv("FORCE_JOIN_CHANNELS"))
     enable_force_join: bool = _bool("ENABLE_FORCE_JOIN", True)
     group_force_join_dm_only: bool = _bool("GROUP_FORCE_JOIN_DM_ONLY", True)
     force_join_dm_start_param: str = os.getenv("FORCE_JOIN_DM_START_PARAM", "forcejoin")
