@@ -26,19 +26,22 @@ class LookupBackend:
         self, key: tuple[int, int], collections: list[str] | None = None
     ) -> ItemSnapshot | None:
         if self.mode == "sqlite":
-            return await mongo_exact_lookup.exact_origin(key, collections)
+            item = await sqlite_index.exact_origin(key, collections)
+            return item or await mongo_exact_lookup.exact_origin(key, collections)
         item = snapshot.exact_origin(key, collections)
         return item or await mongo_exact_lookup.exact_origin(key, collections)
 
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
-            return await mongo_exact_lookup.exact_uid(uid, collections)
+            item = await sqlite_index.exact_uid(uid, collections)
+            return item or await mongo_exact_lookup.exact_uid(uid, collections)
         item = snapshot.exact_uid(uid, collections)
         return item or await mongo_exact_lookup.exact_uid(uid, collections)
 
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
-            return await mongo_exact_lookup.exact_sha(sha, collections)
+            item = await sqlite_index.exact_sha(sha, collections)
+            return item or await mongo_exact_lookup.exact_sha(sha, collections)
         item = snapshot.exact_sha(sha, collections)
         return item or await mongo_exact_lookup.exact_sha(sha, collections)
 
@@ -46,7 +49,8 @@ class LookupBackend:
         self, sha: str, collections: list[str] | None = None
     ) -> ItemSnapshot | None:
         if self.mode == "sqlite":
-            return await mongo_exact_lookup.exact_pixel_sha(sha, collections)
+            item = await sqlite_index.exact_pixel_sha(sha, collections)
+            return item or await mongo_exact_lookup.exact_pixel_sha(sha, collections)
         item = snapshot.exact_pixel_sha(sha, collections)
         return item or await mongo_exact_lookup.exact_pixel_sha(sha, collections)
 
@@ -54,7 +58,8 @@ class LookupBackend:
         self, signature: str, collections: list[str] | None = None
     ) -> ItemSnapshot | None:
         if self.mode == "sqlite":
-            return await mongo_exact_lookup.exact_video_signature(signature, collections)
+            item = await sqlite_index.exact_video_signature(signature, collections)
+            return item or await mongo_exact_lookup.exact_video_signature(signature, collections)
         item = snapshot.exact_video_signature(signature, collections)
         return item or await mongo_exact_lookup.exact_video_signature(signature, collections)
 
