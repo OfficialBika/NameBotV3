@@ -313,7 +313,7 @@ class Settings:
 
     # SQLite hybrid lookup backend. The SQLite DB is a rebuildable secondary index only.
     sqlite_index_path: str = os.getenv("SQLITE_INDEX_PATH", "data/fingerprint_index.db").strip() or "data/fingerprint_index.db"
-    sqlite_sync_seconds: int = _int("SQLITE_SYNC_SECONDS", 10)
+    sqlite_sync_seconds: int = _int("SQLITE_SYNC_SECONDS", 0)
     sqlite_build_on_start: bool = _bool("SQLITE_BUILD_ON_START", True)
     sqlite_rebuild_on_start: bool = _bool("SQLITE_REBUILD_ON_START", False)
     sqlite_batch_size: int = _int("SQLITE_BATCH_SIZE", 500)
