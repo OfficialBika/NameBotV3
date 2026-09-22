@@ -11,7 +11,7 @@ from aiogram.types import Message
 
 from config import settings
 from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video, normalized_hamming
-from services.lookup_backend import lookup_backend
+from services.lookup_backend import lookup_backend\nfrom services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
 from services.source_resolver import output_command_from_message, resolve_lookup_scope, source_origin_key
 from utils.media import extract_media
@@ -252,6 +252,17 @@ class LookupService:
             settings.photo_dhash_threshold,
             settings.photo_max_candidates,
         )
+        # During the initial SQLite build, use a bounded MongoDB projection fallback
+        # so old records remain searchable instead of returning unknown while the
+        # secondary index is warming up. MongoDB remains read-only here.
+        if (
+            not candidates
+            and settings.lookup_engine_mode == "sqlite"
+            and not sqlite_index.ready
+        ):
+            candidates = await lookup_backend.mongo_photo_candidates_fallback(
+                collections, min(settings.photo_max_candidates, 2500)
+            )
         best_item: ItemSnapshot | None = None
         best_score = 0.0
         for item in candidates:
@@ -300,6 +311,17 @@ class LookupService:
             media_hash.duration_ms,
             settings.video_duration_tolerance_seconds,
         )
+        if (
+            not candidates
+            and settings.lookup_engine_mode == "sqlite"
+            and not sqlite_index.ready
+        ):
+            candidates = await lookup_backend.mongo_video_candidates_fallback(
+                collections,
+                media_hash.duration_ms,
+                settings.video_duration_tolerance_seconds,
+                min(settings.video_max_candidates, 2500),
+            )
         best_item: ItemSnapshot | None = None
         best_score = 0.0
         for item in candidates:
