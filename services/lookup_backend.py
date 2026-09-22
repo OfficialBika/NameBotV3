@@ -90,6 +90,18 @@ class LookupBackend:
             max_candidates,
         )
 
+    async def mongo_photo_candidates_fallback(
+        self, collections: list[str] | None, max_candidates: int
+    ) -> list[ItemSnapshot]:
+        return await mongo_exact_lookup.photo_candidates(collections, max_candidates)
+
+    async def mongo_video_candidates_fallback(
+        self, collections: list[str] | None, duration_ms: int, tolerance_seconds: int, max_candidates: int
+    ) -> list[ItemSnapshot]:
+        return await mongo_exact_lookup.video_candidates(
+            collections, duration_ms, tolerance_seconds, max_candidates
+        )
+
     async def video_candidates(
         self,
         collections: list[str] | None,
