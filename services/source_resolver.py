@@ -375,60 +375,70 @@ def resolve_source_collection(message: Message) -> str | None:
 
 def resolve_lookup_scope(message: Message) -> LookupScope:
     if is_blocked_source(message):
-        return LookupScope([], "blocked", strict=True, confident=True, source_label=source_username(message) or source_title(message))
+        return LookupScope(
+            collections=[],
+            mode="blocked",
+            command=None,
+            strict=True,
+            confident=True,
+            source_label=source_username(message) or source_title(message),
+        )
 
-    # Explicit command in the media caption/text has priority over inferred
-    # source metadata. In particular, a Character Catcher spawn caption contains
-    # /catch, so its first lookup scope must always be items_character_catcher.
-    command = command_from_text(_message_text(message))
-    _, content_command = _content_source(message)
-    command = command or content_command
+    # Explicit command in the message/caption is the strongest source signal.
+    # This is important for forwarded bot messages whose sender metadata can be
+    # ambiguous or can point at a different wrapper/channel.
+    cmd = command_from_text(_message_text(message))
+    content_col, content_cmd = _content_source(message)
+    if not cmd and content_cmd:
+        cmd = content_cmd
+
     label = source_username(message) or source_title(message)
 
-    if command == "/catch":
+    # Character Catcher captions explicitly instruct the user to use /catch.
+    # Always prefer its dedicated collection before any inferred source metadata.
+    if cmd == "/catch" or is_character_catcher_spawn(message):
         return LookupScope(
-            ["items_character_catcher"],
-            "command",
-            command,
-            "items_character_catcher",
-            settings.strict_command_lookup,
-            True,
-            label,
+            collections=["items_character_catcher"],
+            mode="command",
+            command="/catch",
+            source_collection="items_character_catcher",
+            strict=settings.strict_command_lookup,
+            confident=True,
+            source_label=label,
         )
 
-    source_collection = resolve_source_collection(message)
-    if source_collection:
+    cmd_cols = collections_from_command(cmd)
+    if cmd_cols:
         return LookupScope(
-            [source_collection], "source", command or COLLECTION_TO_OUTPUT_COMMAND.get(source_collection),
-            source_collection, settings.strict_forward_source_lookup, True, label,
+            collections=cmd_cols,
+            mode="command",
+            command=cmd,
+            source_collection=None,
+            strict=settings.strict_command_lookup,
+            confident=True,
+            source_label=label,
         )
-    command_collections = collections_from_command(command)
-    if command_collections:
-        return LookupScope(command_collections, "command", command, None, settings.strict_command_lookup, True, label)
-    return LookupScope(None, "all", command=command, strict=False, confident=False, source_label=label)
 
+    source_col = resolve_source_collection(message)
+    if source_col:
+        return LookupScope(
+            collections=[source_col],
+            mode="source",
+            command=COLLECTION_TO_OUTPUT_COMMAND.get(source_col),
+            source_collection=source_col,
+            strict=settings.strict_forward_source_lookup,
+            confident=True,
+            source_label=label,
+        )
 
-def output_command_from_message(message: Message, collection: str | None = None) -> str | None:
-    username = source_username(message)
-    if username and username in BOT_SOURCE_OUTPUT_COMMAND:
-        return BOT_SOURCE_OUTPUT_COMMAND[username]
-    user_id = source_user_id(message)
-    if user_id is not None and user_id in BOT_SOURCE_OUTPUT_USER_ID:
-        return BOT_SOURCE_OUTPUT_USER_ID[user_id]
-    title_command = _title_to_output_command(source_title(message))
-    if title_command:
-        return title_command
-    _, content_command = _content_source(message)
-    if content_command and (not collection or collection in collections_from_command(content_command)):
-        return content_command
-    custom_command = _custom_source_command(message)
-    if custom_command and (not collection or collection in collections_from_command(custom_command)):
-        return custom_command
-    text_command = command_from_text(_message_text(message))
-    if text_command and (not collection or collection in collections_from_command(text_command)):
-        return text_command
-    return COLLECTION_TO_OUTPUT_COMMAND.get(collection) if collection else None
-
+    return LookupScope(
+        collections=None,
+        mode="all",
+        command=cmd,
+        strict=False,
+        confident=False,
+        source_label=label,
+    )
 
 def resolve_lookup_collections(message: Message) -> list[str] | None:
     return resolve_lookup_scope(message).collections
