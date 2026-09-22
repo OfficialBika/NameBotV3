@@ -373,11 +373,27 @@ def resolve_source_collection(message: Message) -> str | None:
 def resolve_lookup_scope(message: Message) -> LookupScope:
     if is_blocked_source(message):
         return LookupScope([], "blocked", strict=True, confident=True, source_label=source_username(message) or source_title(message))
-    source_collection = resolve_source_collection(message)
+
+    # Explicit command in the media caption/text has priority over inferred
+    # source metadata. In particular, a Character Catcher spawn caption contains
+    # /catch, so its first lookup scope must always be items_character_catcher.
     command = command_from_text(_message_text(message))
     _, content_command = _content_source(message)
     command = command or content_command
     label = source_username(message) or source_title(message)
+
+    if command == "/catch":
+        return LookupScope(
+            ["items_character_catcher"],
+            "command",
+            command,
+            "items_character_catcher",
+            settings.strict_command_lookup,
+            True,
+            label,
+        )
+
+    source_collection = resolve_source_collection(message)
     if source_collection:
         return LookupScope(
             [source_collection], "source", command or COLLECTION_TO_OUTPUT_COMMAND.get(source_collection),
