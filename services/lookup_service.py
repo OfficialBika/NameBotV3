@@ -107,7 +107,7 @@ class LookupService:
                         return self._done(self._with_command(cached, output_command, source_message), "uid_cache", started, 1.0)
                     item = await lookup_backend.exact_uid(file_uid, collections)
                     reason = "uid"
-                    if not item and settings.v3_global_exact_fallback:
+                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_uid(file_uid, None)
                         reason = "uid_global"
                     if item:
@@ -137,7 +137,7 @@ class LookupService:
                 # 2) byte exact SHA aliases.
                 item = await lookup_backend.exact_sha(media_hash.sha256 or "", collections)
                 reason = "sha"
-                if not item and settings.v3_global_exact_fallback:
+                if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
                     item = await lookup_backend.exact_sha(media_hash.sha256 or "", None)
                     reason = "sha_global"
                 if item:
@@ -149,7 +149,7 @@ class LookupService:
                 if media.media_type == "photo" and media_hash.pixel_sha256:
                     item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, collections)
                     reason = "pixel_sha"
-                    if not item and settings.v3_global_exact_fallback:
+                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, None)
                         reason = "pixel_sha_global"
                     if item:
@@ -161,7 +161,7 @@ class LookupService:
                 if media.media_type == "video" and media_hash.video_signature:
                     item = await lookup_backend.exact_video_signature(media_hash.video_signature, collections)
                     reason = "video_signature"
-                    if not item and settings.v3_global_exact_fallback:
+                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_video_signature(media_hash.video_signature, None)
                         reason = "video_signature_global"
                     if item:
