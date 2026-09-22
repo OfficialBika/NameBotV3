@@ -159,7 +159,10 @@ def is_character_catcher_spawn(message: Message) -> bool:
     text = _message_text(message)
     if not text:
         return False
-    normalized = _clean_title(text)
+    # _clean_title intentionally strips punctuation (including "/"), so use a
+    # command-preserving normalized form for the spawn-caption detector.
+    normalized = _norm_text(text).lower()
+    normalized = normalized.translate(STYLIZED_LATIN_TRANSLATION)
     return bool(CATCH_SPAWN_CAPTION_RE.search(normalized))
 
 
