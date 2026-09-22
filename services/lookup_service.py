@@ -257,12 +257,19 @@ class LookupService:
         # so old records remain searchable instead of returning unknown while the
         # secondary index is warming up. MongoDB remains read-only here.
         if (
-            not candidates
-            and settings.lookup_engine_mode == "sqlite"
-            and not sqlite_index.ready
+            settings.lookup_engine_mode == "sqlite"
+            and (sqlite_index.building or not sqlite_index.ready)
         ):
-            candidates = await lookup_backend.mongo_photo_candidates_fallback(
-                collections, min(settings.photo_max_candidates, 2500)
+            # During a rebuild, SQLite may already contain some candidates while
+            # the target document has not been indexed yet. Always supplement the
+            # partial local index with a bounded MongoDB projection fallback.
+            mongo_candidates = await lookup_backend.mongo_photo_candidates_fallback(
+                collections, min(max(settings.photo_max_candidates, 2500), 10000)
+            )
+            seen = {(item.collection, item.mongo_id) for item in candidates}
+            candidates.extend(
+                item for item in mongo_candidates
+                if (item.collection, item.mongo_id) not in seen
             )
         best_item: ItemSnapshot | None = None
         best_score = 0.0
@@ -313,15 +320,22 @@ class LookupService:
             settings.video_duration_tolerance_seconds,
         )
         if (
-            not candidates
-            and settings.lookup_engine_mode == "sqlite"
-            and not sqlite_index.ready
+            settings.lookup_engine_mode == "sqlite"
+            and (sqlite_index.building or not sqlite_index.ready)
         ):
-            candidates = await lookup_backend.mongo_video_candidates_fallback(
+            # Supplement a partially-built SQLite duration index so a valid
+            # MongoDB record cannot be hidden merely because its local row is
+            # still waiting for the background build.
+            mongo_candidates = await lookup_backend.mongo_video_candidates_fallback(
                 collections,
                 media_hash.duration_ms,
                 settings.video_duration_tolerance_seconds,
-                min(settings.video_max_candidates, 2500),
+                min(max(settings.video_max_candidates, 5000), 10000),
+            )
+            seen = {(item.collection, item.mongo_id) for item in candidates}
+            candidates.extend(
+                item for item in mongo_candidates
+                if (item.collection, item.mongo_id) not in seen
             )
         best_item: ItemSnapshot | None = None
         best_score = 0.0
