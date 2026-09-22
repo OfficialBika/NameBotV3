@@ -220,6 +220,7 @@ class SQLiteFingerprintIndex:
             try:
                 if clear_existing:
                     async with self._write_lock:
+                        await self.db.execute("DELETE FROM exact_keys")
                         await self.db.execute("DELETE FROM hash_chunks")
                         await self.db.execute("DELETE FROM fingerprint_items")
                         await self.db.execute("DELETE FROM index_meta WHERE key='last_sync_at'")
@@ -255,7 +256,7 @@ class SQLiteFingerprintIndex:
                         await self._save_watermark(build_watermark)
                     await self.db.commit()
                 self.last_full_build_monotonic = time.monotonic()
-                self.ready = (await self.count()) > 0
+                self.ready = (await self.count()) > 0 and not failed_collections
                 if failed_collections:
                     log.warning(
                         "SQLite fingerprint build incomplete items=%s failed_collections=%s; retry will run",
@@ -494,6 +495,20 @@ class SQLiteFingerprintIndex:
             self.ready = True
             log.info("SQLite fingerprint delta sync changed=%s", changed_total)
         return changed_total
+
+    async def ensure_ready_loop(self) -> None:
+        """Retry an incomplete startup build without enabling periodic full scans."""
+        while True:
+            try:
+                await asyncio.sleep(30)
+                if not settings.sqlite_build_on_start or self.ready or self.building:
+                    continue
+                await self.ensure_built()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("SQLite readiness retry failed")
+                await asyncio.sleep(30)
 
     async def sync_loop(self) -> None:
         while True:
