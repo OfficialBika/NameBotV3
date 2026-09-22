@@ -14,7 +14,12 @@ from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video
 from services.lookup_backend import lookup_backend
 from services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
-from services.source_resolver import output_command_from_message, resolve_lookup_scope, source_origin_key
+from services.source_resolver import (
+    is_character_catcher_spawn,
+    output_command_from_message,
+    resolve_lookup_scope,
+    source_origin_key,
+)
 from utils.media import extract_media
 from utils.perf import perf
 from utils.ttl_cache import TTLCache
@@ -71,6 +76,11 @@ class LookupService:
                         scope = manual_scope
 
                 collections = scope.collections
+                # Character Catcher spawn posts are scoped to its own collection first,
+                # then explicitly fall back to the complete item database if the
+                # Catch collection has no match. The leading emoji is intentionally
+                # ignored by the caption detector because Catch Bot changes it.
+                catch_spawn_global_fallback = is_character_catcher_spawn(source_message)
                 filter_tag = self._filter_tag(collections)
                 output_command = output_command_from_message(
                     source_message,
@@ -81,7 +91,7 @@ class LookupService:
                 origin = source_origin_key(source_message)
                 if origin:
                     item = await lookup_backend.exact_origin(origin, collections)
-                    if not item and settings.v3_global_exact_fallback:
+                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_origin(origin, None)
                     if item:
                         hit = True
@@ -168,7 +178,7 @@ class LookupService:
                     return self._done(self._with_command(item, output_command, source_message), reason, started, confidence)
 
                 # 6) controlled global similarity fallback. Exact fallbacks above are always preferred.
-                if settings.v3_global_similarity_fallback and collections:
+                if (settings.v3_global_similarity_fallback or catch_spawn_global_fallback) and collections:
                     item, confidence = await self._match_similarity(media_hash, media.media_type, None, global_mode=True)
                     if item:
                         hit = True
