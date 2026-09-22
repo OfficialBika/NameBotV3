@@ -148,6 +148,20 @@ CONTENT_SOURCE_RULES: list[tuple[re.Pattern[str], str, str | None]] = [
 USING_RE = re.compile(r"(?:using|use|hint|full|cmd|command)\s*[:：\-=]?\s*(/[a-zA-Z0-9_]+)(?:@[A-Za-z0-9_]+)?", re.I)
 CMD_RE = re.compile(r"(^|\s)(/[a-zA-Z0-9_]+)(?:@[A-Za-z0-9_]+)?(?=\s|$|[^A-Za-z0-9_@])", re.I)
 
+# Character Catcher spawn captions: the leading emoji is intentionally ignored.
+CATCH_SPAWN_CAPTION_RE = re.compile(
+    r"a\\s+character\\s+has\\s+spawned\\s+in\\s+the\\s+chat\\s*!.*"
+    r"add\\s+this\\s+character\\s+to\\s+your\\s+har(?:e|e)m\\s+using\\s+/catch(?:\\s|$)",
+    re.I | re.S,
+)
+
+def is_character_catcher_spawn(message: Message) -> bool:
+    text = _message_text(message)
+    if not text:
+        return False
+    normalized = _clean_title(text)
+    return bool(CATCH_SPAWN_CAPTION_RE.search(normalized))
+
 
 def _message_text(message: Message) -> str:
     parts: list[str] = []
