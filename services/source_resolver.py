@@ -449,6 +449,42 @@ def resolve_collection(message: Message) -> str | None:
     return cols[0] if cols and len(cols) == 1 else None
 
 
+def output_command_from_message(message: Message, collection: str | None = None) -> str | None:
+    """Resolve the command used to format the lookup result."""
+    username = source_username(message)
+    if username and username in BOT_SOURCE_OUTPUT_COMMAND:
+        return BOT_SOURCE_OUTPUT_COMMAND[username]
+
+    user_id = source_user_id(message)
+    if user_id is not None and int(user_id) in BOT_SOURCE_OUTPUT_USER_ID:
+        return BOT_SOURCE_OUTPUT_USER_ID[int(user_id)]
+
+    title_cmd = _title_to_output_command(source_title(message))
+    if title_cmd:
+        return title_cmd
+
+    _, content_cmd = _content_source(message)
+    if content_cmd:
+        cols = collections_from_command(content_cmd)
+        if not collection or collection in cols:
+            return content_cmd
+
+    custom_cmd = _custom_source_command(message)
+    if custom_cmd:
+        cols = collections_from_command(custom_cmd)
+        if not collection or collection in cols:
+            return custom_cmd
+
+    cmd = command_from_text(_message_text(message))
+    if cmd:
+        cols = collections_from_command(cmd)
+        if not collection or collection in cols:
+            return cmd
+
+    if collection:
+        return COLLECTION_TO_OUTPUT_COMMAND.get(collection)
+    return None
+
 def default_collection() -> str:
     return collection_from_command(settings.default_command) or "items_characters_hallow"
 
