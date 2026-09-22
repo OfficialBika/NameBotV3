@@ -150,8 +150,8 @@ CMD_RE = re.compile(r"(^|\s)(/[a-zA-Z0-9_]+)(?:@[A-Za-z0-9_]+)?(?=\s|$|[^A-Za-z0
 
 # Character Catcher spawn captions: the leading emoji is intentionally ignored.
 CATCH_SPAWN_CAPTION_RE = re.compile(
-    r"a\\s+character\\s+has\\s+spawned\\s+in\\s+the\\s+chat\\s*!.*"
-    r"add\\s+this\\s+character\\s+to\\s+your\\s+har(?:e|e)m\\s+using\\s+/catch(?:\\s|$)",
+    r"a\s+character\s+has\s+spawned\s+in\s+the\s+chat\s*!.*"
+    r"add\s+this\s+character\s+to\s+your\s+harem\s+using\s+/catch(?:\s|$)",
     re.I | re.S,
 )
 
