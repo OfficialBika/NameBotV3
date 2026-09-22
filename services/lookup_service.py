@@ -104,8 +104,10 @@ class LookupService:
                         self.result_cache.set(cache_key, item)
                         return self._done(self._with_command(item, output_command, source_message), reason, started, 1.0)
 
-                if settings.strict_exact_lookup_only:
-                    return self._done(None, "exact_only_miss", started)
+                # Exact matching is always the fast path, but an exact miss must not
+                # make previously working hash/similarity lookup return unknown.
+                # STRICT_EXACT_LOOKUP_ONLY remains accepted for config compatibility;
+                # ENABLE_HASH_FALLBACK is the actual safety switch for hash matching.
                 if not settings.enable_hash_fallback:
                     return self._done(None, "hash_fallback_disabled", started)
 
