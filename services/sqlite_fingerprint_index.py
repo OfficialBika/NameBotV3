@@ -347,7 +347,7 @@ class SQLiteFingerprintIndex:
 
     async def _exact_lookup(self, key_type: str, key_value: str,
                             collections: list[str] | None = None) -> ItemSnapshot | None:
-        if self.db is None or not self.ready or not key_value:
+        if self.db is None or not key_value:
             return None
         selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
         if not selected:
