@@ -102,6 +102,87 @@ class MongoExactLookup:
             collections,
         )
 
+    async def photo_candidates(
+        self, collections: list[str] | None, max_candidates: int
+    ) -> list[ItemSnapshot]:
+        """Small fallback candidate scan used only while the SQLite index is not ready."""
+        selected = self._collections(collections)
+        if not selected or max_candidates <= 0:
+            return []
+        query = {
+            "$or": [
+                {"photo_fingerprint.phash": {"$exists": True}},
+                {"phash": {"$exists": True}},
+                {"photo_phash": {"$exists": True}},
+                {"image_phash": {"$exists": True}},
+            ]
+        }
+        out: list[ItemSnapshot] = []
+        per_collection = max(1, max_candidates // max(1, len(selected)))
+        for collection in selected:
+            try:
+                cursor = get_db()[collection].find(
+                    query,
+                    projection=LOOKUP_PROJECTION,
+                ).limit(per_collection)
+                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
+                async for doc in cursor:
+                    item = parse_item(collection, default_command, doc)
+                    if item:
+                        out.append(item)
+                        if len(out) >= max_candidates:
+                            return out
+            except Exception as exc:
+                log.warning("Mongo photo candidate fallback failed collection=%s error=%s", collection, exc)
+        return out
+
+    async def video_candidates(
+        self, collections: list[str] | None, duration_ms: int, tolerance_seconds: int, max_candidates: int
+    ) -> list[ItemSnapshot]:
+        """Small fallback candidate scan used only while the SQLite index is not ready."""
+        selected = self._collections(collections)
+        if not selected or max_candidates <= 0:
+            return []
+        query: dict[str, Any] = {
+            "$or": [
+                {"video_fingerprint.sample_hashes": {"$exists": True}},
+                {"video_fingerprint.video_signature": {"$exists": True}},
+                {"frame_hashes": {"$exists": True}},
+                {"video_frame_hashes": {"$exists": True}},
+                {"frames": {"$exists": True}},
+            ]
+        }
+        if duration_ms > 0:
+            lo = max(0, int(duration_ms - max(0, tolerance_seconds) * 1000))
+            hi = int(duration_ms + max(0, tolerance_seconds) * 1000)
+            query = {
+                "$and": [
+                    query,
+                    {"$or": [
+                        {"video_fingerprint.duration_ms": {"$gte": lo, "$lte": hi}},
+                        {"media_geometry.duration_ms": {"$gte": lo, "$lte": hi}},
+                    ]},
+                ]
+            }
+        out: list[ItemSnapshot] = []
+        per_collection = max(1, max_candidates // max(1, len(selected)))
+        for collection in selected:
+            try:
+                cursor = get_db()[collection].find(
+                    query,
+                    projection=LOOKUP_PROJECTION,
+                ).limit(per_collection)
+                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
+                async for doc in cursor:
+                    item = parse_item(collection, default_command, doc)
+                    if item:
+                        out.append(item)
+                        if len(out) >= max_candidates:
+                            return out
+            except Exception as exc:
+                log.warning("Mongo video candidate fallback failed collection=%s error=%s", collection, exc)
+        return out
+
     async def fetch_items_by_ids(
         self, keys: Iterable[tuple[str, str]]
     ) -> list[ItemSnapshot]:
