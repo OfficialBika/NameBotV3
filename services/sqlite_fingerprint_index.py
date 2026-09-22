@@ -250,7 +250,10 @@ class SQLiteFingerprintIndex:
         ):
             self.ready = True
             return
-        await self.build_full(clear_existing=settings.sqlite_rebuild_on_start or existing == 0)
+        # A persisted partial/stale index must be discarded before rebuilding.
+        # Reusing it can leave deleted Mongo documents behind and keep the
+        # completeness check failing forever.
+        await self.build_full(clear_existing=True)
 
     async def build_full(self, *, clear_existing: bool = True) -> int:
         await self.open()
