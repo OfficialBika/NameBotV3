@@ -198,12 +198,56 @@ class SQLiteFingerprintIndex:
             "path": self.path,
         }
 
+    async def _matches_mongo_counts(self) -> bool:
+        """Verify that the local secondary index is complete before marking it ready.
+
+        SQLite is rebuildable and may survive a Render restart with only a partial
+        build. A non-zero row count alone is therefore not sufficient evidence that
+        similarity lookup is safe.
+        """
+        if self.db is None:
+            return False
+        try:
+            cursor = await self.db.execute(
+                "SELECT collection, COUNT(*) AS n FROM fingerprint_items GROUP BY collection"
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+            indexed = {str(row["collection"]): int(row["n"] or 0) for row in rows}
+
+            async def mongo_count(collection: str) -> tuple[str, int]:
+                return collection, int(await get_db()[collection].count_documents({}))
+
+            counts = await asyncio.gather(
+                *(mongo_count(collection) for collection in COLLECTION_TO_OUTPUT_COMMAND)
+            )
+            for collection, mongo_count_value in counts:
+                if indexed.get(collection, 0) != mongo_count_value:
+                    log.warning(
+                        "SQLite completeness mismatch collection=%s sqlite=%s mongo=%s",
+                        collection,
+                        indexed.get(collection, 0),
+                        mongo_count_value,
+                    )
+                    return False
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("SQLite completeness check failed")
+            return False
+
     async def ensure_built(self) -> None:
         await self.open()
         if not settings.sqlite_build_on_start:
             return
         existing = await self.count()
-        if existing > 0 and self.last_sync_at is not None and not settings.sqlite_rebuild_on_start:
+        if (
+            existing > 0
+            and self.last_sync_at is not None
+            and not settings.sqlite_rebuild_on_start
+            and await self._matches_mongo_counts()
+        ):
             self.ready = True
             return
         await self.build_full(clear_existing=settings.sqlite_rebuild_on_start or existing == 0)
