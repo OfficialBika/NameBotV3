@@ -573,7 +573,7 @@ class SQLiteFingerprintIndex:
         dhash_threshold: int,
         max_candidates: int,
     ) -> list[ItemSnapshot]:
-        if self.db is None or not self.ready:
+        if self.db is None:
             return []
         selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
         rows = await self._photo_rows_for_hash(
@@ -612,7 +612,7 @@ class SQLiteFingerprintIndex:
         duration_ms: int,
         tolerance_seconds: int,
     ) -> list[ItemSnapshot]:
-        if self.db is None or not self.ready:
+        if self.db is None:
             return []
         selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
         marks = ",".join("?" for _ in selected)
