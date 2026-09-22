@@ -11,7 +11,8 @@ from aiogram.types import Message
 
 from config import settings
 from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video, normalized_hamming
-from services.lookup_backend import lookup_backend\nfrom services.sqlite_fingerprint_index import sqlite_index
+from services.lookup_backend import lookup_backend
+from services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
 from services.source_resolver import output_command_from_message, resolve_lookup_scope, source_origin_key
 from utils.media import extract_media
