@@ -73,7 +73,7 @@ class LookupBackend:
         max_candidates: int,
     ) -> list[ItemSnapshot]:
         if self.mode == "sqlite":
-            return await sqlite_index.photo_candidates(
+            candidates = await sqlite_index.photo_candidates(
                 collections,
                 phash,
                 dhash,
@@ -81,6 +81,15 @@ class LookupBackend:
                 dhash_threshold,
                 max_candidates,
             )
+            if candidates:
+                return candidates
+            # SQLite is a local secondary index, not the source of truth.
+            # A ready-but-stale/partial index must never hide MongoDB records.
+            log.info(
+                "SQLite photo index returned no candidates; falling back to MongoDB collections=%s",
+                collections,
+            )
+            return await mongo_exact_lookup.photo_candidates(collections, max_candidates)
         return snapshot.photo_candidates(
             collections,
             phash,
@@ -109,7 +118,18 @@ class LookupBackend:
         tolerance_seconds: int,
     ) -> list[ItemSnapshot]:
         if self.mode == "sqlite":
-            return await sqlite_index.video_candidates(collections, duration_ms, tolerance_seconds)
+            candidates = await sqlite_index.video_candidates(collections, duration_ms, tolerance_seconds)
+            if candidates:
+                return candidates
+            # SQLite is a local secondary index, not the source of truth.
+            # A ready-but-stale/partial index must never hide MongoDB records.
+            log.info(
+                "SQLite video index returned no candidates; falling back to MongoDB collections=%s",
+                collections,
+            )
+            return await mongo_exact_lookup.video_candidates(
+                collections, duration_ms, tolerance_seconds, max_candidates=5000
+            )
         return snapshot.video_candidates(collections, duration_ms, tolerance_seconds)
 
     async def stats(self) -> dict[str, Any]:
