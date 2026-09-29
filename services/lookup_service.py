@@ -158,49 +158,48 @@ class LookupService:
                     # Global UID is always the second stage after source-scoped UID.
                     # This is shared by auto and manual lookup; config flags must not
                     # accidentally disable the core UID recovery path.
-                    if True:
-                        # Primary global UID priority: Catch source first. This is
-                        # intentionally limited to global exact UID recovery only.
-                        # Existing source routing and all hash/similarity behavior
-                        # remains unchanged.
-                        for candidate_uid in file_uids:
-                            item = await lookup_backend.exact_uid(
+                    # Primary global UID priority: Catch source first. This is
+                    # intentionally limited to global exact UID recovery only.
+                    # Existing source routing and all hash/similarity behavior
+                    # remains unchanged.
+                    for candidate_uid in file_uids:
+                        item = await lookup_backend.exact_uid(
+                            candidate_uid,
+                            ["items_character_catcher"],
+                        )
+                        if item:
+                            hit = True
+                            log.info(
+                                "UID DEBUG global_exact_priority message=%s preferred_source=%s uid=%s name=%s",
+                                getattr(message, "message_id", None),
+                                item.collection,
                                 candidate_uid,
-                                ["items_character_catcher"],
+                                item.name,
                             )
-                            if item:
-                                hit = True
-                                log.info(
-                                    "UID DEBUG global_exact_priority message=%s preferred_source=%s uid=%s name=%s",
-                                    getattr(message, "message_id", None),
-                                    item.collection,
-                                    candidate_uid,
-                                    item.name,
-                                )
-                                return self._done(
-                                    self._with_command(item, output_command, source_message),
-                                    "uid_global",
-                                    started,
-                                    1.0,
-                                )
+                            return self._done(
+                                self._with_command(item, output_command, source_message),
+                                "uid_global",
+                                started,
+                                1.0,
+                            )
 
-                        for candidate_uid in file_uids:
-                            item = await lookup_backend.exact_uid(candidate_uid, None)
-                            if item:
-                                hit = True
-                                log.info(
-                                    "UID DEBUG global_exact_recovery message=%s source=%s uid=%s name=%s",
-                                    getattr(message, "message_id", None),
-                                    item.collection,
-                                    candidate_uid,
-                                    item.name,
-                                )
-                                return self._done(
-                                    self._with_command(item, output_command, source_message),
-                                    "uid_global",
-                                    started,
-                                    1.0,
-                                )
+                    for candidate_uid in file_uids:
+                        item = await lookup_backend.exact_uid(candidate_uid, None)
+                        if item:
+                            hit = True
+                            log.info(
+                                "UID DEBUG global_exact_recovery message=%s source=%s uid=%s name=%s",
+                                getattr(message, "message_id", None),
+                                item.collection,
+                                candidate_uid,
+                                item.name,
+                            )
+                            return self._done(
+                                self._with_command(item, output_command, source_message),
+                                "uid_global",
+                                started,
+                                1.0,
+                            )
 
                     log.warning(
                         "UID DEBUG database_uid_miss message=%s requested_sources=%s",
