@@ -37,7 +37,7 @@ class LookupScope:
 
 LOOKUP_COLLECTION_ORDER = [c for c in COLLECTION_TO_OUTPUT_COMMAND if c != "items_unknown"]
 COMMAND_TO_COLLECTIONS: dict[str, list[str]] = {
-    "/catch": ["items_character_catcher"],
+    "/catch": ["items_character_catcher", "items_character_catcher_fw"],
     "/hallow": ["items_characters_hallow"],
     "/capture": ["items_capture_character"],
     "/seize": ["items_character_seizer"],
@@ -80,6 +80,8 @@ def _clean_title(value: str | None) -> str:
 
 TITLE_SOURCE_COLLECTION: dict[str, str] = {
     "character catcher": "items_character_catcher",
+    "character catcher logs": "items_character_catcher_fw",
+    "character catcher log": "items_character_catcher_fw",
     "character catcher bot": "items_character_catcher",
     "characters hallow": "items_characters_hallow",
     "hallow upload": "items_characters_hallow",
