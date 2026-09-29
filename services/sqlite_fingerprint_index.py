@@ -235,6 +235,24 @@ class SQLiteFingerprintIndex:
             "path": self.path,
         }
 
+    @staticmethod
+    def _indexable_mongo_query() -> dict[str, Any]:
+        # Count only documents that parse_item() can actually materialize into
+        # the SQLite lookup index. System/invalid records are intentionally ignored.
+        return {
+            "$or": [
+                {"name": {"$nin": [None, ""]}},
+                {"character_name": {"$nin": [None, ""]}},
+                {"char_name": {"$nin": [None, ""]}},
+                {"item_name": {"$nin": [None, ""]}},
+                {"card_name": {"$nin": [None, ""]}},
+                {"display_name": {"$nin": [None, ""]}},
+                {"title": {"$nin": [None, ""]}},
+                {"media.name": {"$nin": [None, ""]}},
+                {"character.name": {"$nin": [None, ""]}},
+            ]
+        }
+
     async def _matches_mongo_counts(self) -> bool:
         """Verify that the local secondary index is complete before marking it ready.
 
@@ -253,7 +271,7 @@ class SQLiteFingerprintIndex:
             indexed = {str(row["collection"]): int(row["n"] or 0) for row in rows}
 
             async def mongo_count(collection: str) -> tuple[str, int]:
-                return collection, int(await get_db()[collection].count_documents({}))
+                return collection, int(await get_db()[collection].count_documents(self._indexable_mongo_query()))
 
             counts = await asyncio.gather(
                 *(mongo_count(collection) for collection in COLLECTION_TO_OUTPUT_COMMAND)
