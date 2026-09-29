@@ -101,11 +101,12 @@ class LookupService:
                     collections[0] if collections and len(collections) == 1 else None,
                 )
 
-                # 0) Exact origin mapping. Useful when the exact archived/database channel post is forwarded.
+                # UID order is authoritative for both auto and manual lookup:
+                # source-scoped UID -> global UID -> other exact/hash fallbacks.
                 origin = source_origin_key(source_message)
                 if origin:
                     item = await lookup_backend.exact_origin(origin, collections)
-                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
+                    if not item:
                         item = await lookup_backend.exact_origin(origin, None)
                     if item:
                         hit = True
@@ -154,7 +155,10 @@ class LookupService:
                                 1.0,
                             )
 
-                    if settings.v3_global_exact_fallback or catch_spawn_global_fallback:
+                    # Global UID is always the second stage after source-scoped UID.
+                    # This is shared by auto and manual lookup; config flags must not
+                    # accidentally disable the core UID recovery path.
+                    if True:
                         # Primary global UID priority: Catch source first. This is
                         # intentionally limited to global exact UID recovery only.
                         # Existing source routing and all hash/similarity behavior
