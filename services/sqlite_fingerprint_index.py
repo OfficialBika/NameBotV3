@@ -19,6 +19,17 @@ from services.snapshot_cache import HashChunkIndex, ItemSnapshot, LOOKUP_PROJECT
 
 log = logging.getLogger(__name__)
 
+# SQLite is a derived lookup index. Keep only fields required to identify, verify,
+# and format a lookup result; never mirror the full MongoDB document into SQLite.
+SQLITE_ITEM_FIELDS = (
+    "mongo_id", "collection", "command", "name", "card_id", "rarity", "media_type",
+    "file_unique_id", "file_unique_ids", "sha256", "sha256_aliases",
+    "phash", "pixel_sha256", "phash_large", "dhash", "whash", "colorhash",
+    "crop_hash", "frame_hashes", "video_samples", "video_signature", "duration_ms",
+    "origin_chat_id", "origin_message_id",
+)
+SQLITE_INDEX_SCHEMA_VERSION = "2"
+
 
 class SQLiteFingerprintIndex:
     """Persistent, rebuildable local similarity index.
@@ -106,7 +117,11 @@ class SQLiteFingerprintIndex:
         self.last_sync_at = await self._load_watermark()
         count = await self.count()
         self.ready = count > 0
-        log.info("SQLite fingerprint index opened path=%s items=%s ready=%s", path, count, self.ready)
+        schema_version = await self._schema_version()
+        log.info(
+            "SQLite fingerprint index opened path=%s items=%s ready=%s schema=%s fields=%s",
+            path, count, self.ready, schema_version or "legacy", len(SQLITE_ITEM_FIELDS),
+        )
 
     async def close(self) -> None:
         if self.db is not None:
@@ -128,6 +143,23 @@ class SQLiteFingerprintIndex:
         except Exception:
             return None
 
+    async def _schema_version(self) -> str | None:
+        if self.db is None:
+            return None
+        cursor = await self.db.execute("SELECT value FROM index_meta WHERE key='schema_version'")
+        row = await cursor.fetchone()
+        await cursor.close()
+        return str(row[0]) if row else None
+
+    async def _save_schema_version(self) -> None:
+        if self.db is None:
+            return
+        await self.db.execute(
+            "INSERT INTO index_meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (SQLITE_INDEX_SCHEMA_VERSION,),
+        )
+
     async def _save_watermark(self, value: datetime) -> None:
         if self.db is None:
             return
@@ -140,7 +172,12 @@ class SQLiteFingerprintIndex:
 
     @staticmethod
     def _item_to_json(item: ItemSnapshot) -> str:
-        return json.dumps(asdict(item), ensure_ascii=False, separators=(",", ":"))
+        # Do not serialize asdict(item): ItemSnapshot contains compatibility/output
+        # fields that are not needed for lookup and would unnecessarily duplicate
+        # MongoDB data inside the local SQLite file.
+        data = asdict(item)
+        compact = {key: data.get(key) for key in SQLITE_ITEM_FIELDS}
+        return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
     def _item_from_json(raw: str) -> ItemSnapshot | None:
@@ -242,14 +279,21 @@ class SQLiteFingerprintIndex:
         if not settings.sqlite_build_on_start:
             return
         existing = await self.count()
+        schema_version = await self._schema_version()
         if (
             existing > 0
+            and schema_version == SQLITE_INDEX_SCHEMA_VERSION
             and self.last_sync_at is not None
             and not settings.sqlite_rebuild_on_start
             and await self._matches_mongo_counts()
         ):
             self.ready = True
             return
+        if existing > 0 and schema_version != SQLITE_INDEX_SCHEMA_VERSION:
+            log.info(
+                "SQLite index schema upgrade %s -> %s; rebuilding compact lookup index only",
+                schema_version or "legacy", SQLITE_INDEX_SCHEMA_VERSION,
+            )
         # A persisted partial/stale index must be discarded before rebuilding.
         # Reusing it can leave deleted Mongo documents behind and keep the
         # completeness check failing forever.
@@ -300,6 +344,7 @@ class SQLiteFingerprintIndex:
 
                 async with self._write_lock:
                     if not failed_collections:
+                        await self._save_schema_version()
                         await self._save_watermark(build_watermark)
                     await self.db.commit()
                 self.last_full_build_monotonic = time.monotonic()
