@@ -73,7 +73,7 @@ class LookupBackend:
         max_candidates: int,
     ) -> list[ItemSnapshot]:
         if self.mode == "sqlite":
-            return await sqlite_index.photo_candidates(
+            candidates = await sqlite_index.photo_candidates(
                 collections,
                 phash,
                 dhash,
@@ -81,6 +81,15 @@ class LookupBackend:
                 dhash_threshold,
                 max_candidates,
             )
+            # SQLite is only a rebuildable secondary index. If it is stale,
+            # partial, or empty, MongoDB remains the source-of-truth fallback.
+            if candidates:
+                return candidates
+            log.info(
+                "SQLite photo index returned no candidates; falling back to MongoDB collections=%s",
+                collections,
+            )
+            return await mongo_exact_lookup.photo_candidates(collections, max_candidates)
         return snapshot.photo_candidates(
             collections,
             phash,
@@ -109,13 +118,28 @@ class LookupBackend:
         tolerance_seconds: int,
     ) -> list[ItemSnapshot]:
         if self.mode == "sqlite":
-            return await sqlite_index.video_candidates(collections, duration_ms, tolerance_seconds)
+            candidates = await sqlite_index.video_candidates(collections, duration_ms, tolerance_seconds)
+            # Keep MongoDB authoritative when the local SQLite duration index
+            # has not been built or is incomplete.
+            if candidates:
+                return candidates
+            log.info(
+                "SQLite video index returned no candidates; falling back to MongoDB collections=%s",
+                collections,
+            )
+            return await mongo_exact_lookup.video_candidates(
+                collections,
+                duration_ms,
+                tolerance_seconds,
+                settings.video_max_candidates,
+            )
         return snapshot.video_candidates(collections, duration_ms, tolerance_seconds)
 
     async def stats(self) -> dict[str, Any]:
         if self.mode == "sqlite":
             data = await sqlite_index.stats()
             data["mode"] = "sqlite"
+            data["mongo_source_of_truth"] = True
             return data
         return {
             "mode": "snapshot",
