@@ -296,6 +296,29 @@ LOOKUP_PROJECTION: dict[str, int] = {
     "character": 1,
 }
 
+# Narrow MongoDB projection used specifically when materializing the local SQLite
+# lookup index. It excludes non-lookup metadata such as anime/archive/raw containers
+# while retaining legacy aliases required by parse_item().
+SQLITE_LOOKUP_PROJECTION: dict[str, int] = {
+    "name": 1, "character_name": 1, "char_name": 1, "item_name": 1,
+    "card_name": 1, "display_name": 1, "title": 1,
+    "rarity": 1, "rank": 1, "tier": 1, "class": 1,
+    "card_id": 1, "id": 1, "item_id": 1, "char_id": 1, "character_id": 1,
+    "command_name": 1, "source_key": 1, "source_collection": 1, "item_key": 1,
+    "name_aliases": 1,
+    "media_type": 1, "type": 1,
+    "file_unique_id": 1, "file_unique_ids": 1,
+    "photo_file_unique_id": 1, "video_file_unique_id": 1,
+    "sha256": 1, "sha256_aliases": 1, "media_sha256": 1, "hash": 1, "file_hash": 1,
+    "phash": 1, "photo_phash": 1, "image_phash": 1,
+    "frame_hashes": 1, "video_frame_hashes": 1, "frames": 1,
+    "photo_fingerprint": 1, "video_fingerprint": 1, "media_geometry": 1,
+    "source_origin": 1, "updated_at": 1, "fingerprint_version": 1,
+    "media.name": 1, "media.file_unique_id": 1, "media.type": 1, "media.phash": 1,
+    "file.unique_id": 1, "file.type": 1, "file.phash": 1, "file.hash": 1, "file.frame_hashes": 1,
+    "character.name": 1,
+}
+
 
 def parse_item(collection: str, default_command: str, doc: dict) -> ItemSnapshot | None:
     name = normalize_name(_first_present(doc, NAME_FIELDS))
