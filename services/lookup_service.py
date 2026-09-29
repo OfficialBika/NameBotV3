@@ -346,6 +346,57 @@ class LookupService:
         phash_threshold = settings.photo_phash_threshold
         if collections == ["items_waifux_grab"] or collections is None:
             phash_threshold = max(settings.photo_phash_threshold, settings.waifux_photo_phash_threshold)
+
+        async def evaluate(items: list[ItemSnapshot]) -> tuple[ItemSnapshot | None, float]:
+            best_item: ItemSnapshot | None = None
+            best_score = 0.0
+            for item in items:
+                p_distance = hamming_hex(media_hash.phash, item.phash)
+                d_distance = hamming_hex(media_hash.dhash, item.dhash)
+                effective_p_threshold = (
+                    settings.waifux_photo_phash_threshold
+                    if item.is_waifux
+                    else settings.photo_phash_threshold
+                )
+
+                # Old V2 records only have pHash: retain compatibility.
+                if not item.dhash and p_distance is not None and p_distance <= effective_p_threshold:
+                    score = max(0.0, 1.0 - p_distance / 64.0)
+                    minimum = settings.global_photo_multi_score_min if global_mode else 0.0
+                    if score >= minimum and score > best_score:
+                        best_item, best_score = item, score
+                    continue
+
+                metrics: list[tuple[float, float]] = []
+                for query_value, item_value, weight in (
+                    (media_hash.phash, item.phash, 0.35),
+                    (media_hash.dhash, item.dhash, 0.25),
+                    (media_hash.whash, item.whash, 0.15),
+                    (media_hash.phash_large, item.phash_large, 0.15),
+                    (media_hash.colorhash, item.colorhash, 0.10),
+                ):
+                    distance = normalized_hamming(query_value, item_value)
+                    if distance is not None:
+                        metrics.append((max(0.0, 1.0 - distance), weight))
+                if not metrics:
+                    continue
+                weighted = sum(similarity * weight for similarity, weight in metrics)
+                total_weight = sum(weight for _, weight in metrics)
+                score = weighted / total_weight if total_weight else 0.0
+
+                structural_ok = (
+                    (p_distance is not None and p_distance <= effective_p_threshold)
+                    or (d_distance is not None and d_distance <= settings.photo_dhash_threshold)
+                )
+                minimum = (
+                    settings.global_photo_multi_score_min
+                    if global_mode
+                    else settings.photo_multi_score_min
+                )
+                if structural_ok and score >= minimum and score > best_score:
+                    best_item, best_score = item, score
+            return best_item, best_score
+
         candidates = await lookup_backend.photo_candidates(
             collections,
             media_hash.phash,
@@ -354,79 +405,82 @@ class LookupService:
             settings.photo_dhash_threshold,
             settings.photo_max_candidates,
         )
-        # During the initial SQLite build, use a bounded MongoDB projection fallback
-        # so old records remain searchable instead of returning unknown while the
-        # secondary index is warming up. MongoDB remains read-only here.
-        if (
-            settings.lookup_engine_mode == "sqlite"
-            and (sqlite_index.building or not sqlite_index.ready)
-        ):
-            # During a rebuild, SQLite may already contain some candidates while
-            # the target document has not been indexed yet. Always supplement the
-            # partial local index with a bounded MongoDB projection fallback.
+        best_item, best_score = await evaluate(candidates)
+
+        # SQLite is a fast secondary index, never an authority. If it has no
+        # verified match, query MongoDB using the same lookup-only projection.
+        if best_item is None and settings.lookup_engine_mode == "sqlite":
             mongo_candidates = await lookup_backend.mongo_photo_candidates_fallback(
-                collections, min(max(settings.photo_max_candidates, 2500), 10000)
+                collections,
+                min(max(settings.photo_max_candidates, 2500), 10000),
             )
             seen = {(item.collection, item.mongo_id) for item in candidates}
-            candidates.extend(
+            mongo_candidates = [
                 item for item in mongo_candidates
                 if (item.collection, item.mongo_id) not in seen
-            )
-        best_item: ItemSnapshot | None = None
-        best_score = 0.0
-        for item in candidates:
-            p_distance = hamming_hex(media_hash.phash, item.phash)
-            d_distance = hamming_hex(media_hash.dhash, item.dhash)
-            effective_p_threshold = settings.waifux_photo_phash_threshold if item.is_waifux else settings.photo_phash_threshold
-
-            # Old V2 records only have pHash: retain compatibility.
-            if not item.dhash and p_distance is not None and p_distance <= effective_p_threshold:
-                score = max(0.0, 1.0 - p_distance / 64.0)
-                minimum = settings.global_photo_multi_score_min if global_mode else 0.0
-                if score >= minimum and score > best_score:
-                    best_item, best_score = item, score
-                continue
-
-            metrics: list[tuple[float, float]] = []
-            for query_value, item_value, weight in (
-                (media_hash.phash, item.phash, 0.35),
-                (media_hash.dhash, item.dhash, 0.25),
-                (media_hash.whash, item.whash, 0.15),
-                (media_hash.phash_large, item.phash_large, 0.15),
-                (media_hash.colorhash, item.colorhash, 0.10),
-            ):
-                distance = normalized_hamming(query_value, item_value)
-                if distance is not None:
-                    metrics.append((max(0.0, 1.0 - distance), weight))
-            if not metrics:
-                continue
-            weighted = sum(similarity * weight for similarity, weight in metrics)
-            total_weight = sum(weight for _, weight in metrics)
-            score = weighted / total_weight if total_weight else 0.0
-
-            # Require at least one strong structural signal.
-            structural_ok = (
-                (p_distance is not None and p_distance <= effective_p_threshold)
-                or (d_distance is not None and d_distance <= settings.photo_dhash_threshold)
-            )
-            minimum = settings.global_photo_multi_score_min if global_mode else settings.photo_multi_score_min
-            if structural_ok and score >= minimum and score > best_score:
-                best_item, best_score = item, score
+            ]
+            best_item, best_score = await evaluate(mongo_candidates)
         return best_item, best_score
 
     async def _match_video(self, media_hash: MediaHash, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
+        async def evaluate(items: list[ItemSnapshot]) -> tuple[ItemSnapshot | None, float]:
+            best_item: ItemSnapshot | None = None
+            best_score = 0.0
+            for item in items:
+                frame_threshold = (
+                    settings.waifux_video_frame_threshold
+                    if item.is_waifux
+                    else settings.video_frame_threshold
+                )
+                avg_threshold = (
+                    settings.waifux_video_avg_threshold
+                    if item.is_waifux
+                    else settings.video_avg_threshold
+                )
+
+                distances: list[int] = []
+                if media_hash.video_samples and item.video_samples:
+                    item_by_pos = {round(sample.position, 3): sample for sample in item.video_samples}
+                    for sample in media_hash.video_samples:
+                        other = item_by_pos.get(round(sample.position, 3))
+                        if not other:
+                            continue
+                        p = hamming_hex(sample.phash, other.phash)
+                        d = hamming_hex(sample.dhash, other.dhash)
+                        if p is not None:
+                            distances.append(p)
+                        if d is not None:
+                            distances.append(d)
+                elif media_hash.frame_hashes and item.frame_hashes:
+                    for left, right in zip(media_hash.frame_hashes, item.frame_hashes):
+                        distance = hamming_hex(left, right)
+                        if distance is not None:
+                            distances.append(distance)
+                if not distances:
+                    continue
+                average = sum(distances) / len(distances)
+                minimum = min(distances)
+                if global_mode:
+                    if minimum > max(1, frame_threshold - 2) or average > max(1.0, avg_threshold - 2.0):
+                        continue
+                else:
+                    if minimum > frame_threshold or average > avg_threshold:
+                        continue
+                score = max(0.0, 1.0 - average / 64.0)
+                if score > best_score:
+                    best_item, best_score = item, score
+            return best_item, best_score
+
         candidates = await lookup_backend.video_candidates(
             collections,
             media_hash.duration_ms,
             settings.video_duration_tolerance_seconds,
         )
-        if (
-            settings.lookup_engine_mode == "sqlite"
-            and (sqlite_index.building or not sqlite_index.ready)
-        ):
-            # Supplement a partially-built SQLite duration index so a valid
-            # MongoDB record cannot be hidden merely because its local row is
-            # still waiting for the background build.
+        best_item, best_score = await evaluate(candidates)
+
+        # Same correctness guard as photos: a stale/partial SQLite index cannot
+        # hide a valid MongoDB record when the local candidates do not verify.
+        if best_item is None and settings.lookup_engine_mode == "sqlite":
             mongo_candidates = await lookup_backend.mongo_video_candidates_fallback(
                 collections,
                 media_hash.duration_ms,
@@ -434,49 +488,13 @@ class LookupService:
                 min(max(settings.video_max_candidates, 5000), 10000),
             )
             seen = {(item.collection, item.mongo_id) for item in candidates}
-            candidates.extend(
+            mongo_candidates = [
                 item for item in mongo_candidates
                 if (item.collection, item.mongo_id) not in seen
-            )
-        best_item: ItemSnapshot | None = None
-        best_score = 0.0
-        for item in candidates:
-            frame_threshold = settings.waifux_video_frame_threshold if item.is_waifux else settings.video_frame_threshold
-            avg_threshold = settings.waifux_video_avg_threshold if item.is_waifux else settings.video_avg_threshold
-
-            distances: list[int] = []
-            if media_hash.video_samples and item.video_samples:
-                item_by_pos = {round(sample.position, 3): sample for sample in item.video_samples}
-                for sample in media_hash.video_samples:
-                    other = item_by_pos.get(round(sample.position, 3))
-                    if not other:
-                        continue
-                    p = hamming_hex(sample.phash, other.phash)
-                    d = hamming_hex(sample.dhash, other.dhash)
-                    if p is not None:
-                        distances.append(p)
-                    if d is not None:
-                        distances.append(d)
-            elif media_hash.frame_hashes and item.frame_hashes:
-                for left, right in zip(media_hash.frame_hashes, item.frame_hashes):
-                    distance = hamming_hex(left, right)
-                    if distance is not None:
-                        distances.append(distance)
-            if not distances:
-                continue
-            average = sum(distances) / len(distances)
-            minimum = min(distances)
-            if global_mode:
-                # Stronger global verification to reduce cross-source false positives.
-                if minimum > max(1, frame_threshold - 2) or average > max(1.0, avg_threshold - 2.0):
-                    continue
-            else:
-                if minimum > frame_threshold or average > avg_threshold:
-                    continue
-            score = max(0.0, 1.0 - average / 64.0)
-            if score > best_score:
-                best_item, best_score = item, score
+            ]
+            best_item, best_score = await evaluate(mongo_candidates)
         return best_item, best_score
+
 
 
 lookup_service = LookupService()
