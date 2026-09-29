@@ -101,17 +101,6 @@ class LookupService:
                     collections[0] if collections and len(collections) == 1 else None,
                 )
 
-                # UID order is authoritative for both auto and manual lookup:
-                # source-scoped UID -> global UID -> other exact/hash fallbacks.
-                origin = source_origin_key(source_message)
-                if origin:
-                    item = await lookup_backend.exact_origin(origin, collections)
-                    if not item:
-                        item = await lookup_backend.exact_origin(origin, None)
-                    if item:
-                        hit = True
-                        return self._done(self._with_command(item, output_command, source_message), "origin", started, 1.0)
-
                 file_uids = _telegram_uids(source_message, media)
                 file_uid = file_uids[0] if file_uids else ""
                 log.info(
@@ -200,6 +189,16 @@ class LookupService:
                                 started,
                                 1.0,
                             )
+
+                # Other exact identity is checked only after both UID stages.
+                origin = source_origin_key(source_message)
+                if origin:
+                    item = await lookup_backend.exact_origin(origin, collections)
+                    if not item:
+                        item = await lookup_backend.exact_origin(origin, None)
+                    if item:
+                        hit = True
+                        return self._done(self._with_command(item, output_command, source_message), "origin", started, 1.0)
 
                     log.warning(
                         "UID DEBUG database_uid_miss message=%s requested_sources=%s",
