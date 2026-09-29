@@ -116,8 +116,8 @@ class SQLiteFingerprintIndex:
         self.opened_at = time.time()
         self.last_sync_at = await self._load_watermark()
         count = await self.count()
-        self.ready = count > 0
         schema_version = await self._schema_version()
+        self.ready = count > 0 and schema_version == SQLITE_INDEX_SCHEMA_VERSION
         log.info(
             "SQLite fingerprint index opened path=%s items=%s ready=%s schema=%s fields=%s",
             path, count, self.ready, schema_version or "legacy", len(SQLITE_ITEM_FIELDS),
