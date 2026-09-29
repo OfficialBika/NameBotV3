@@ -33,6 +33,20 @@ except Exception:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 
+def _telegram_uids(message: Message, media) -> list[str]:
+    """Return every native Telegram file_unique_id exposed by the media."""
+    values: list[str] = []
+    if media.media_type == "photo":
+        for photo in (getattr(message, "photo", None) or []):
+            uid = str(getattr(photo, "file_unique_id", "") or "").strip()
+            if uid and uid not in values:
+                values.append(uid)
+    uid = str(getattr(media.obj, "file_unique_id", "") or "").strip()
+    if uid and uid not in values:
+        values.append(uid)
+    return values
+
+
 @dataclass(frozen=True)
 class LookupResult:
     item: ItemSnapshot | None
@@ -97,23 +111,98 @@ class LookupService:
                         hit = True
                         return self._done(self._with_command(item, output_command, source_message), "origin", started, 1.0)
 
-                file_uid = str(getattr(media.obj, "file_unique_id", "") or "")
-                # 1) UID exact match, including V3 file_unique_ids aliases.
-                if file_uid:
-                    cache_key = f"uid:{filter_tag}:{file_uid}"
-                    cached = self.result_cache.get(cache_key)
-                    if cached:
-                        hit = True
-                        return self._done(self._with_command(cached, output_command, source_message), "uid_cache", started, 1.0)
-                    item = await lookup_backend.exact_uid(file_uid, collections)
-                    reason = "uid"
-                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
-                        item = await lookup_backend.exact_uid(file_uid, None)
-                        reason = "uid_global"
-                    if item:
-                        hit = True
-                        self.result_cache.set(cache_key, item)
-                        return self._done(self._with_command(item, output_command, source_message), reason, started, 1.0)
+                file_uids = _telegram_uids(source_message, media)
+                file_uid = file_uids[0] if file_uids else ""
+                log.info(
+                    "UID DEBUG message=%s source_message=%s media_type=%s collections=%s uids=%s",
+                    getattr(message, "message_id", None),
+                    getattr(source_message, "message_id", None),
+                    media.media_type,
+                    collections,
+                    file_uids,
+                )
+
+                # 1) UID exact match, including every Telegram photo-size UID
+                # and V3 file_unique_ids aliases. Source scope always wins.
+                if file_uids:
+                    for candidate_uid in file_uids:
+                        cache_key = f"uid:{filter_tag}:{candidate_uid}"
+                        cached = self.result_cache.get(cache_key)
+                        if cached:
+                            hit = True
+                            return self._done(
+                                self._with_command(cached, output_command, source_message),
+                                "uid_cache",
+                                started,
+                                1.0,
+                            )
+                        item = await lookup_backend.exact_uid(candidate_uid, collections)
+                        if item:
+                            hit = True
+                            self.result_cache.set(cache_key, item)
+                            log.info(
+                                "UID DEBUG source_match message=%s source=%s name=%s uid=%s",
+                                getattr(message, "message_id", None),
+                                item.collection,
+                                item.name,
+                                candidate_uid,
+                            )
+                            return self._done(
+                                self._with_command(item, output_command, source_message),
+                                "uid",
+                                started,
+                                1.0,
+                            )
+
+                    if settings.v3_global_exact_fallback or catch_spawn_global_fallback:
+                        # Primary global UID priority: Catch source first. This is
+                        # intentionally limited to global exact UID recovery only.
+                        # Existing source routing and all hash/similarity behavior
+                        # remains unchanged.
+                        for candidate_uid in file_uids:
+                            item = await lookup_backend.exact_uid(
+                                candidate_uid,
+                                ["items_character_catcher"],
+                            )
+                            if item:
+                                hit = True
+                                log.info(
+                                    "UID DEBUG global_exact_priority message=%s preferred_source=%s uid=%s name=%s",
+                                    getattr(message, "message_id", None),
+                                    item.collection,
+                                    candidate_uid,
+                                    item.name,
+                                )
+                                return self._done(
+                                    self._with_command(item, output_command, source_message),
+                                    "uid_global",
+                                    started,
+                                    1.0,
+                                )
+
+                        for candidate_uid in file_uids:
+                            item = await lookup_backend.exact_uid(candidate_uid, None)
+                            if item:
+                                hit = True
+                                log.info(
+                                    "UID DEBUG global_exact_recovery message=%s source=%s uid=%s name=%s",
+                                    getattr(message, "message_id", None),
+                                    item.collection,
+                                    candidate_uid,
+                                    item.name,
+                                )
+                                return self._done(
+                                    self._with_command(item, output_command, source_message),
+                                    "uid_global",
+                                    started,
+                                    1.0,
+                                )
+
+                    log.warning(
+                        "UID DEBUG database_uid_miss message=%s requested_sources=%s",
+                        getattr(message, "message_id", None),
+                        collections,
+                    )
 
                 # Exact matching is always the fast path, but an exact miss must not
                 # make previously working hash/similarity lookup return unknown.
