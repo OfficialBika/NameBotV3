@@ -77,7 +77,24 @@ async def auto_lookup(message: Message) -> None:
     if _already_processed(message):
         return
     try:
-        result = await lookup_service.lookup_message(message.bot, message, manual=False)
+        # @SenpaiCatcherBot can send the character media directly as a bot
+        # message while replying to another message. In that specific path,
+        # the incoming Senpai media itself is the lookup target; all other
+        # sources keep the existing reply-aware extraction behavior.
+        lookup_target = message
+        from_user = getattr(message, "from_user", None)
+        is_senpai_bot = bool(
+            getattr(from_user, "is_bot", False)
+            and getattr(from_user, "id", None) == 8532697507
+        )
+        if is_senpai_bot and getattr(message, "reply_to_message", None):
+            lookup_target = message.model_copy(update={"reply_to_message": None})
+
+        result = await lookup_service.lookup_message(
+            message.bot,
+            lookup_target,
+            manual=False,
+        )
     except Exception as exc:
         log.exception("auto lookup failed")
         await send_lookup_miss(
