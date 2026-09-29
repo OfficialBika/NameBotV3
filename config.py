@@ -126,6 +126,7 @@ def _supported_bots() -> list[tuple[str, str]]:
 
 COLLECTION_TO_OUTPUT_COMMAND: Dict[str, str] = {
     "items_character_catcher": "/catch",
+    "items_character_catcher_fw": "/catch",
     "items_characters_hallow": "/hallow",
     "items_capture_character": "/capture",
     "items_character_seizer": "/seize",
