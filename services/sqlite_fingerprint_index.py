@@ -15,7 +15,7 @@ import aiosqlite
 from config import COLLECTION_TO_OUTPUT_COMMAND, settings
 from database.mongo import get_db
 from services.hash_service import VideoSampleHash
-from services.snapshot_cache import HashChunkIndex, ItemSnapshot, LOOKUP_PROJECTION, parse_item
+from services.snapshot_cache import HashChunkIndex, ItemSnapshot, SQLITE_LOOKUP_PROJECTION, parse_item
 
 log = logging.getLogger(__name__)
 
@@ -322,7 +322,7 @@ class SQLiteFingerprintIndex:
                     batch: list[ItemSnapshot] = []
                     try:
                         cursor = get_db()[collection].find(
-                            {}, projection=LOOKUP_PROJECTION
+                            {}, projection=SQLITE_LOOKUP_PROJECTION
                         ).batch_size(max(1, settings.sqlite_batch_size))
                         async for doc in cursor:
                             item = parse_item(collection, default_command, doc)
