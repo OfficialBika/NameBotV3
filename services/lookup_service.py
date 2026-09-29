@@ -190,16 +190,6 @@ class LookupService:
                                 1.0,
                             )
 
-                # Other exact identity is checked only after both UID stages.
-                origin = source_origin_key(source_message)
-                if origin:
-                    item = await lookup_backend.exact_origin(origin, collections)
-                    if not item:
-                        item = await lookup_backend.exact_origin(origin, None)
-                    if item:
-                        hit = True
-                        return self._done(self._with_command(item, output_command, source_message), "origin", started, 1.0)
-
                     log.warning(
                         "UID DEBUG database_uid_miss message=%s requested_sources=%s",
                         getattr(message, "message_id", None),
@@ -279,6 +269,22 @@ class LookupService:
                             f"{reason}_global",
                             started,
                             confidence,
+                        )
+
+                # Origin is retained as a late exact fallback for forwarded/archive
+                # records, so UID/global-UID and hash matching always keep priority.
+                origin = source_origin_key(source_message)
+                if origin:
+                    item = await lookup_backend.exact_origin(origin, collections)
+                    if not item:
+                        item = await lookup_backend.exact_origin(origin, None)
+                    if item:
+                        hit = True
+                        return self._done(
+                            self._with_command(item, output_command, source_message),
+                            "origin",
+                            started,
+                            1.0,
                         )
 
                 miss_key = f"miss:{filter_tag}:{media.media_type}:{media_hash.sha256 or file_uid}"
