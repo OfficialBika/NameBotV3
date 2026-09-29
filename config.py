@@ -166,6 +166,7 @@ COMMAND_TO_COLLECTION: Dict[str, str] = {
 
 BOT_SOURCE_COLLECTION: Dict[str, str] = {
     "@character_catcher_bot": "items_character_catcher",
+    "@character_catcher_logs": "items_character_catcher_fw",
     "@characters_hallow_bot": "items_characters_hallow",
     "@hallowuploads": "items_characters_hallow",
     "@capturecharacterbot": "items_capture_character",
