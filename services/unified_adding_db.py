@@ -69,13 +69,10 @@ class UnifiedAddingDB:
             if configured_name:
                 candidate_names = [configured_name]
             else:
+                # First probe the configured DB directly. This avoids relying on
+                # MongoDB's listDatabaseNames/listCollections privileges when the
+                # Adding and NameBot services intentionally share the same DB.
                 candidate_names = [settings.db_name]
-                try:
-                    for name in await base_db.client.list_database_names():
-                        if name not in candidate_names:
-                            candidate_names.append(name)
-                except Exception as exc:
-                    log.warning("Unified Adding DB auto-discovery unavailable: %s", exc)
 
             known_sources = set(COLLECTION_TO_OUTPUT_COMMAND) - {"items_unknown"}
             candidates: list[tuple[int, int, str]] = []
@@ -108,6 +105,47 @@ class UnifiedAddingDB:
                     self._checked = True
                     await self._log_schema_state()
                     return True
+
+                if not configured_name and db_name == settings.db_name:
+                    try:
+                        sample = await collection.find_one(
+                            {
+                                "$or": [
+                                    {"source_key": {"$in": sorted(known_sources)}},
+                                    {"file_unique_ids": {"$exists": True}},
+                                    {"telegram_file_unique_id": {"$exists": True}},
+                                ]
+                            },
+                            projection={
+                                "_id": 1,
+                                "source_key": 1,
+                                "file_unique_ids": 1,
+                                "telegram_file_unique_id": 1,
+                            },
+                            max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                        )
+                    except Exception as exc:
+                        sample = None
+                        log.warning(
+                            "Unified Adding DB direct probe failed db=%s collection=%s error=%s",
+                            db_name,
+                            self.collection_name,
+                            exc,
+                        )
+
+                    if sample:
+                        self._db = target_db
+                        self.db_name = db_name
+                        self._enabled = True
+                        self._checked = True
+                        log.info(
+                            "Unified Adding DB bound to current DB db=%s collection=%s "
+                            "via canonical schema probe",
+                            db_name,
+                            self.collection_name,
+                        )
+                        await self._log_schema_state()
+                        return True
 
                 try:
                     source_rows = await collection.aggregate(
