@@ -242,7 +242,7 @@ class LookupService:
                 if media.media_type == "video" and media_hash.video_signature:
                     item = await lookup_backend.exact_video_signature(media_hash.video_signature, collections)
                     reason = "video_signature"
-                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
+                    if not item and ((manual and not collections) or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_video_signature(media_hash.video_signature, None)
                         reason = "video_signature_global"
                     if item:
