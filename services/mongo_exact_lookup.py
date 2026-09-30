@@ -24,30 +24,39 @@ class MongoExactLookup:
         self._sem = asyncio.Semaphore(8)
 
     @staticmethod
-    def _uid_query(uid: str) -> dict[str, Any]:
-        """Match every UID layout used by Adding-Helperbot/legacy records.
+    def _uid_query(uids: str | Iterable[str]) -> dict[str, Any]:
+        """Match the canonical Adding schema first, then known legacy layouts."""
+        if isinstance(uids, str):
+            values = [uids.strip()] if uids.strip() else []
+        else:
+            values = []
+            for raw in uids:
+                value = str(raw or "").strip()
+                if value and value not in values:
+                    values.append(value)
+        if not values:
+            return {"$expr": {"$eq": [1, 0]}}
 
-        Telegram file_unique_id may be stored as a scalar, an alias list, or
-        nested under media/file containers. The lookup side is read-only and
-        deliberately accepts all known layouts without changing the source DB.
-        """
-        value = str(uid or "").strip()
+        # Canonical Adding-Helperbot fields are flat and indexed:
+        #   file_unique_ids[]           -> idx_*_file_uid
+        #   telegram_file_unique_id     -> idx_*_telegram_file_uid
+        # Keep the legacy branches below so older imported records remain searchable.
         return {
             "$or": [
-                {"file_unique_id": value},
-                {"file_unique_ids": value},
-                {"telegram_file_unique_id": value},
-                {"telegram_file_unique_ids": value},
-                {"photo_file_unique_id": value},
-                {"video_file_unique_id": value},
-                {"media.file_unique_id": value},
-                {"media.file_unique_ids": value},
-                {"media.telegram_file_unique_id": value},
-                {"media.telegram_file_unique_ids": value},
-                {"file.unique_id": value},
-                {"file.file_unique_id": value},
-                {"file_unique_ids.file_unique_id": value},
-                {"file_unique_ids.unique_id": value},
+                {"file_unique_ids": {"$in": values}},
+                {"telegram_file_unique_id": {"$in": values}},
+                {"telegram_file_unique_ids": {"$in": values}},
+                {"file_unique_id": {"$in": values}},
+                {"photo_file_unique_id": {"$in": values}},
+                {"video_file_unique_id": {"$in": values}},
+                {"media.file_unique_id": {"$in": values}},
+                {"media.file_unique_ids": {"$in": values}},
+                {"media.telegram_file_unique_id": {"$in": values}},
+                {"media.telegram_file_unique_ids": {"$in": values}},
+                {"file.unique_id": {"$in": values}},
+                {"file.file_unique_id": {"$in": values}},
+                {"file_unique_ids.file_unique_id": {"$in": values}},
+                {"file_unique_ids.unique_id": {"$in": values}},
             ]
         }
 
@@ -134,9 +143,16 @@ class MongoExactLookup:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
-        if not uid:
+        return await self.exact_uids([uid], collections)
+
+    async def exact_uids(
+        self, uids: Iterable[str], collections: list[str] | None = None
+    ) -> ItemSnapshot | None:
+        values = [str(uid or "").strip() for uid in uids if str(uid or "").strip()]
+        values = list(dict.fromkeys(values))
+        if not values:
             return None
-        return await self._find_first(self._uid_query(uid), collections)
+        return await self._find_first(self._uid_query(values), collections)
 
     async def global_exact_uid(
         self,
@@ -146,27 +162,40 @@ class MongoExactLookup:
         preferred_collections: list[str] | None = None,
         limit: int = 20,
     ) -> ItemSnapshot | None:
-        """Global exact Telegram UID recovery with deterministic ambiguity handling.
+        return await self.global_exact_uids(
+            [uid],
+            preferred_collection=preferred_collection,
+            preferred_collections=preferred_collections,
+            limit=limit,
+        )
 
-        Unified Adding DB is one physical collection, so fetch a small exact-UID
-        candidate set and prefer the primary Catch source when the same Telegram
-        UID exists under multiple logical sources. If there is no preferred source,
-        accept the UID only when it is unique. This prevents arbitrary cross-source
-        matches while still giving Auto and Manual lookup the same global fallback.
-        """
-        if not uid:
+    async def global_exact_uids(
+        self,
+        uids: Iterable[str],
+        *,
+        preferred_collection: str = "items_character_catcher",
+        preferred_collections: list[str] | None = None,
+        limit: int = 20,
+    ) -> ItemSnapshot | None:
+        """Global exact UID lookup against the canonical unified characters collection."""
+        values = [str(uid or "").strip() for uid in uids if str(uid or "").strip()]
+        values = list(dict.fromkeys(values))
+        if not values:
             return None
 
         if unified_adding_db.enabled:
             try:
+                # Canonical indexed query. No source_key restriction is applied here:
+                # this is the deliberate global fallback after source-scope miss.
                 cursor = unified_adding_db.collection().find(
-                    self._uid_query(uid),
+                    self._uid_query(values),
                     projection=LOOKUP_PROJECTION,
                 ).limit(max(2, limit))
                 items: list[ItemSnapshot] = []
                 raw_matches = 0
                 parsed_matches = 0
                 unknown_sources: list[str] = []
+
                 async for doc in cursor:
                     raw_matches += 1
                     source = unified_adding_db.source_key(doc)
@@ -185,43 +214,42 @@ class MongoExactLookup:
 
                 if not items:
                     log.warning(
-                        "Global UID miss uid=%s raw_matches=%s parsed_matches=%s unknown_sources=%s",
-                        uid,
+                        "Global UID miss db=%s collection=%s uids=%s raw_matches=%s "
+                        "parsed_matches=%s unknown_sources=%s",
+                        unified_adding_db.db_name,
+                        unified_adding_db.collection_name,
+                        values,
                         raw_matches,
                         parsed_matches,
                         unknown_sources,
                     )
                     return None
 
-                # Prefer the source family that just missed before falling
-                # back to the historical Catch preference. This is important for
-                # /catch, whose unified source family contains both live and
-                # forward-log records.
                 preferences: list[str] = []
                 for value in (preferred_collections or []):
-                    value = str(value).strip()
+                    value = str(value).strip().lower()
                     if value and value not in preferences:
                         preferences.append(value)
-                if preferred_collection and preferred_collection not in preferences:
-                    preferences.append(preferred_collection)
+                preferred = str(preferred_collection or "").strip().lower()
+                if preferred and preferred not in preferences:
+                    preferences.append(preferred)
 
                 for preferred_name in preferences:
-                    preferred = next(
-                        (
-                            item for item in items
-                            if item.collection == preferred_name
-                        ),
+                    preferred_item = next(
+                        (item for item in items if item.collection == preferred_name),
                         None,
                     )
-                    if preferred:
-                        return preferred
+                    if preferred_item:
+                        return preferred_item
 
                 if len(items) == 1:
                     return items[0]
 
                 log.warning(
-                    "Global UID ambiguous uid=%s candidates=%s sources=%s",
-                    uid,
+                    "Global UID ambiguous db=%s collection=%s uids=%s candidates=%s sources=%s",
+                    unified_adding_db.db_name,
+                    unified_adding_db.collection_name,
+                    values,
                     len(items),
                     [item.collection for item in items],
                 )
@@ -229,12 +257,22 @@ class MongoExactLookup:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.warning("Unified global UID lookup failed uid=%s error=%s", uid, exc)
+                log.warning(
+                    "Unified global UID lookup failed db=%s collection=%s uids=%s error=%s",
+                    unified_adding_db.db_name,
+                    unified_adding_db.collection_name,
+                    values,
+                    exc,
+                )
                 return None
 
-        # Preserve legacy collection-mode behavior when the unified collection
-        # is not enabled. This branch is read-only and intentionally unchanged.
-        return await self.exact_uid(uid, None)
+        # Legacy physical-collection mode.
+        for value in values:
+            item = await self.exact_uid(value, None)
+            if item:
+                return item
+        return None
+
 
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not sha:
