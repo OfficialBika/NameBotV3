@@ -379,7 +379,7 @@ def parse_item(collection: str, default_command: str, doc: dict) -> ItemSnapshot
         colorhash=_clean(_first_present(doc, ["colorhash", "photo_fingerprint.colorhash"])),
         crop_hash=_clean(_first_present(doc, ["crop_hash", "photo_fingerprint.crop_hash"])),
         frame_hashes=frames,
-        video_samples=_video_samples(video_fp.get("sample_hashes")),
+        video_samples=_video_samples(video_fp.get("sample_hashes") or doc.get("video_samples")),
         video_signature=_clean(video_fp.get("video_signature")),
         duration_ms=int(video_fp.get("duration_ms") or geometry.get("duration_ms") or 0),
         fps=float(video_fp.get("fps") or geometry.get("fps") or 0.0),
