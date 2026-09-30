@@ -479,80 +479,16 @@ class MongoExactLookup:
                         exc,
                     )
 
-        # 3) Catch-only cross-database recovery.
-        # NameBot can be bound to a DB that contains other unified sources while
-        # the canonical Catch dataset lives in another DB. Search only canonical
-        # characters documents whose source_key is a Catch source.
-        try:
-            client = current_db.client
-            if self._catch_external_db_names is None:
-                names = await client.list_database_names()
-                bound_name = str(unified_adding_db.db_name or "").strip()
-                current_name = str(current_db.name or "").strip()
-                excluded = {x for x in (bound_name, current_name) if x}
-                reserved = {"admin", "config", "local"}
-                self._catch_external_db_names = [
-                    str(name) for name in names
-                    if (
-                        str(name)
-                        and str(name) not in excluded
-                        and str(name).lower() not in reserved
-                    )
-                ]
-                log.info(
-                    "Catch compatibility cross-db scan databases=%s excluded=%s",
-                    self._catch_external_db_names,
-                    sorted(excluded),
-                )
-
-            for db_name in self._catch_external_db_names:
-                target_db = client[db_name]
-                for reason, query in queries:
-                    try:
-                        scoped = unified_adding_db.scoped_query(query, catch_collections)
-                        async with self._sem:
-                            doc = await target_db["characters"].find_one(
-                                scoped,
-                                projection=CATCH_COMPAT_PROJECTION,
-                                max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
-                            )
-                        item = parse_doc("items_character_catcher", doc)
-                        if item:
-                            log.info(
-                                "Catch compatibility match tier=cross_db key=%s db=%s source=%s name=%s",
-                                reason,
-                                db_name,
-                                item.collection,
-                                item.name,
-                            )
-                            return item
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        error_text = str(exc)
-                        if "Unauthorized" in error_text or "not authorized" in error_text.lower():
-                            # Do not retry an inaccessible database on every UID/key.
-                            log.info(
-                                "Catch cross-db skip inaccessible db=%s key=%s",
-                                db_name,
-                                reason,
-                            )
-                            self._catch_external_db_names = [
-                                value
-                                for value in (self._catch_external_db_names or [])
-                                if value != db_name
-                            ]
-                            break
-                        log.warning(
-                            "Catch cross-db canonical lookup failed db=%s key=%s error=%s",
-                            db_name,
-                            reason,
-                            exc,
-                        )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log.warning("Catch cross-db discovery failed error=%s", exc)
+        # 3) No blind cross-database scan here.
+        # Atlas users often cannot read system DBs (admin/local), and scanning
+        # every database turns a normal Catch miss into a multi-second timeout.
+        # The canonical Adding DB is already selected by unified_adding_db; any
+        # legacy Catch collections are checked only in the currently configured DB.
+        log.info(
+            "Catch compatibility exhausted current DB=%s keys=%s; no cross-db scan",
+            current_db.name,
+            [reason for reason, _query in queries],
+        )
 
         return None
 
