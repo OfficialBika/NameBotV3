@@ -117,6 +117,7 @@ class MongoExactLookup:
         uid: str,
         *,
         preferred_collection: str = "items_character_catcher",
+        preferred_collections: list[str] | None = None,
         limit: int = 20,
     ) -> ItemSnapshot | None:
         """Global exact Telegram UID recovery with deterministic ambiguity handling.
@@ -161,15 +162,28 @@ class MongoExactLookup:
                 if not items:
                     return None
 
-                preferred = next(
-                    (
-                        item for item in items
-                        if item.collection == preferred_collection
-                    ),
-                    None,
-                )
-                if preferred:
-                    return preferred
+                # Prefer the source family that just missed before falling
+                # back to the historical Catch preference. This is important for
+                # /catch, whose unified source family contains both live and
+                # forward-log records.
+                preferences: list[str] = []
+                for value in (preferred_collections or []):
+                    value = str(value).strip()
+                    if value and value not in preferences:
+                        preferences.append(value)
+                if preferred_collection and preferred_collection not in preferences:
+                    preferences.append(preferred_collection)
+
+                for preferred_name in preferences:
+                    preferred = next(
+                        (
+                            item for item in items
+                            if item.collection == preferred_name
+                        ),
+                        None,
+                    )
+                    if preferred:
+                        return preferred
 
                 if len(items) == 1:
                     return items[0]
