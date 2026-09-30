@@ -146,7 +146,10 @@ class UnifiedAddingDB:
         return value or str(fallback or "").strip().lower()
 
     def collection(self):
-        return (self._db or get_db())[self.collection_name]
+        # PyMongo Database objects intentionally do not support truth-value testing.
+        # Compare with None explicitly so unified lookups never fail here.
+        db = self._db if self._db is not None else get_db()
+        return db[self.collection_name]
 
 
 unified_adding_db = UnifiedAddingDB()
