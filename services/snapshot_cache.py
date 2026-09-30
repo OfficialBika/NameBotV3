@@ -233,7 +233,7 @@ ID_FIELDS = ["card_id", "id", "item_id", "char_id", "character_id", "media.id", 
 RARITY_FIELDS = ["rarity", "rank", "tier", "class", "media.rarity", "character.rarity"]
 FILE_UID_FIELDS = ["file_unique_id", "photo_file_unique_id", "video_file_unique_id", "media.file_unique_id", "file.unique_id"]
 SHA_FIELDS = ["sha256", "media_sha256", "hash", "file_hash", "media.sha256", "file.sha256"]
-PHASH_FIELDS = ["photo_fingerprint.phash", "phash", "photo_phash", "image_phash", "media.phash", "file.phash"]
+PHASH_FIELDS = ["phash", "photo_fingerprint.phash", "photo_phash", "image_phash", "media.phash", "file.phash"]
 FRAME_HASH_FIELDS = ["frame_hashes", "video_frame_hashes", "frames", "media.frame_hashes", "file.frame_hashes"]
 
 # Read only fields required by lookup. This materially reduces Mongo network traffic
@@ -310,7 +310,7 @@ SQLITE_LOOKUP_PROJECTION: dict[str, int] = {
     "file_unique_id": 1, "file_unique_ids": 1,
     "photo_file_unique_id": 1, "video_file_unique_id": 1,
     "sha256": 1, "sha256_aliases": 1, "media_sha256": 1, "hash": 1, "file_hash": 1,
-    "phash": 1, "photo_phash": 1, "image_phash": 1,
+    "phash": 1, "phash_large": 1, "dhash": 1, "whash": 1, "colorhash": 1, "crop_hash": 1, "pixel_sha256": 1,\n    "phash_chunks": 1, "dhash_chunks": 1, "photo_phash": 1, "image_phash": 1,
     "frame_hashes": 1, "video_frame_hashes": 1, "frames": 1,
     "photo_fingerprint.phash": 1, "photo_fingerprint.pixel_sha256": 1,
     "photo_fingerprint.phash_large": 1, "photo_fingerprint.dhash": 1,
@@ -341,7 +341,7 @@ def parse_item(collection: str, default_command: str, doc: dict) -> ItemSnapshot
     source_origin = doc.get("source_origin") if isinstance(doc.get("source_origin"), dict) else {}
     archive = doc.get("archive") if isinstance(doc.get("archive"), dict) else {}
 
-    phash = _clean(photo_fp.get("phash")) or _clean(_first_present(doc, PHASH_FIELDS))
+    phash = _clean(_first_present(doc, PHASH_FIELDS)) or _clean(photo_fp.get("phash"))
     frames = _frame_hashes(_first_present(doc, FRAME_HASH_FIELDS))
     media_type = str(_first_present(doc, ["media_type", "type", "media.type", "file_type"]) or "").lower().strip()
     if media_type in {"image", "pic", "picture"}:
