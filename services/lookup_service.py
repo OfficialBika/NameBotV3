@@ -148,7 +148,7 @@ class LookupService:
                     # - manual lookup may recover globally;
                     # - Catch spawn is a controlled exception;
                     # - auto lookup with a known source stays source-scoped.
-                    allow_global_exact = bool(manual or catch_spawn_global_fallback or not collections)
+                    allow_global_exact = bool((manual and not collections) or catch_spawn_global_fallback)
                     if allow_global_exact:
                         # Catch source gets priority for the legacy spawn path.
                         for candidate_uid in file_uids:
@@ -218,7 +218,7 @@ class LookupService:
                 # 2) byte exact SHA aliases.
                 item = await lookup_backend.exact_sha(media_hash.sha256 or "", collections)
                 reason = "sha"
-                if not item and (manual or catch_spawn_global_fallback):
+                if not item and ((manual and not collections) or catch_spawn_global_fallback):
                     item = await lookup_backend.exact_sha(media_hash.sha256 or "", None)
                     reason = "sha_global"
                 if item:
@@ -230,7 +230,7 @@ class LookupService:
                 if media.media_type == "photo" and media_hash.pixel_sha256:
                     item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, collections)
                     reason = "pixel_sha"
-                    if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
+                    if not item and ((manual and not collections) or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, None)
                         reason = "pixel_sha_global"
                     if item:
@@ -259,7 +259,7 @@ class LookupService:
                     return self._done(self._with_command(item, output_command, source_message), reason, started, confidence)
 
                 # 6) controlled global similarity fallback. Exact fallbacks above are always preferred.
-                if (collections and (manual or catch_spawn_global_fallback)):
+                if catch_spawn_global_fallback or (manual and not collections):
                     item, confidence = await self._match_similarity(media_hash, media.media_type, None, global_mode=True)
                     if item:
                         hit = True
@@ -276,7 +276,7 @@ class LookupService:
                 origin = source_origin_key(source_message)
                 if origin:
                     item = await lookup_backend.exact_origin(origin, collections)
-                    if not item:
+                    if not item and ((manual and not collections) or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_origin(origin, None)
                     if item:
                         hit = True
