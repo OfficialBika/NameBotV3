@@ -144,51 +144,51 @@ class LookupService:
                                 1.0,
                             )
 
-                    # Global UID is always the second stage after source-scoped UID.
-                    # This is shared by auto and manual lookup; config flags must not
-                    # accidentally disable the core UID recovery path.
-                    # Primary global UID priority: Catch source first. This is
-                    # intentionally limited to global exact UID recovery only.
-                    # Existing source routing and all hash/similarity behavior
-                    # remains unchanged.
-                    for candidate_uid in file_uids:
-                        item = await lookup_backend.exact_uid(
-                            candidate_uid,
-                            ["items_character_catcher"],
-                        )
-                        if item:
-                            hit = True
-                            log.info(
-                                "UID DEBUG global_exact_priority message=%s preferred_source=%s uid=%s name=%s",
-                                getattr(message, "message_id", None),
-                                item.collection,
-                                candidate_uid,
-                                item.name,
-                            )
-                            return self._done(
-                                self._with_command(item, output_command, source_message),
-                                "uid_global",
-                                started,
-                                1.0,
-                            )
+                    # Global UID recovery is intentionally restricted:
+                    # - manual lookup may recover globally when the source is unknown;
+                    # - Catch spawn is a controlled exception;
+                    # - auto lookup with a known source stays source-scoped to prevent
+                    # cross-source false positives.
+                    allow_global_exact = bool(manual or catch_spawn_global_fallback or not collections)
+                        if allow_global_exact:
+                                for candidate_uid in file_uids:
+                                item = await lookup_backend.exact_uid(
+                                    candidate_uid,
+                                    ["items_character_catcher"],
+                                )
+                            if item:
+                                hit = True
+                                log.info(
+                                    "UID DEBUG global_exact_priority message=%s preferred_source=%s uid=%s name=%s",
+                                    getattr(message, "message_id", None),
+                                    item.collection,
+                                    candidate_uid,
+                                    item.name,
+                                )
+                                return self._done(
+                                    self._with_command(item, output_command, source_message),
+                                    "uid_global",
+                                    started,
+                                    1.0,
+                                )
 
-                    for candidate_uid in file_uids:
-                        item = await lookup_backend.exact_uid(candidate_uid, None)
-                        if item:
-                            hit = True
-                            log.info(
-                                "UID DEBUG global_exact_recovery message=%s source=%s uid=%s name=%s",
-                                getattr(message, "message_id", None),
-                                item.collection,
-                                candidate_uid,
-                                item.name,
-                            )
-                            return self._done(
-                                self._with_command(item, output_command, source_message),
-                                "uid_global",
-                                started,
-                                1.0,
-                            )
+                            for candidate_uid in file_uids:
+                                item = await lookup_backend.exact_uid(candidate_uid, None)
+                            if item:
+                                hit = True
+                                log.info(
+                                    "UID DEBUG global_exact_recovery message=%s source=%s uid=%s name=%s",
+                                    getattr(message, "message_id", None),
+                                    item.collection,
+                                    candidate_uid,
+                                    item.name,
+                                )
+                                return self._done(
+                                    self._with_command(item, output_command, source_message),
+                                    "uid_global",
+                                    started,
+                                    1.0,
+                                )
 
                     log.warning(
                         "UID DEBUG database_uid_miss message=%s requested_sources=%s",
@@ -218,7 +218,7 @@ class LookupService:
                 # 2) byte exact SHA aliases.
                 item = await lookup_backend.exact_sha(media_hash.sha256 or "", collections)
                 reason = "sha"
-                if not item and (settings.v3_global_exact_fallback or catch_spawn_global_fallback):
+                if not item and (manual or catch_spawn_global_fallback):
                     item = await lookup_backend.exact_sha(media_hash.sha256 or "", None)
                     reason = "sha_global"
                 if item:
@@ -259,7 +259,7 @@ class LookupService:
                     return self._done(self._with_command(item, output_command, source_message), reason, started, confidence)
 
                 # 6) controlled global similarity fallback. Exact fallbacks above are always preferred.
-                if (settings.v3_global_similarity_fallback or catch_spawn_global_fallback) and collections:
+                if (collections and (manual or catch_spawn_global_fallback)):
                     item, confidence = await self._match_similarity(media_hash, media.media_type, None, global_mode=True)
                     if item:
                         hit = True
