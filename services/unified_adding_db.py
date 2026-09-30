@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Iterable
 
 from config import settings
@@ -23,7 +22,7 @@ class UnifiedAddingDB:
 
     def __init__(self) -> None:
         self.collection_name = (
-            os.getenv("UNIFIED_ADDING_COLLECTION", "characters").strip()
+            getattr(settings, "unified_adding_collection", "characters").strip()
             or "characters"
         )
         self._enabled = False
