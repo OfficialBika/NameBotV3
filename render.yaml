@@ -13,3 +13,13 @@ services:
         value: "true"
       - key: PYTHON_VERSION
         value: 3.11.11
+      - key: UNIFIED_ADDING_DB_ENABLED
+        value: "true"
+      - key: UNIFIED_ADDING_COLLECTION
+        value: characters
+      - key: LOOKUP_ENGINE_MODE
+        value: sqlite
+      - key: SQLITE_SYNC_SECONDS
+        value: "10"
+      - key: SQLITE_BUILD_ON_START
+        value: "true"
