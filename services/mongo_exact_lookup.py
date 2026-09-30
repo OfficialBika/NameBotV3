@@ -24,6 +24,34 @@ class MongoExactLookup:
         self._sem = asyncio.Semaphore(8)
 
     @staticmethod
+    def _uid_query(uid: str) -> dict[str, Any]:
+        """Match every UID layout used by Adding-Helperbot/legacy records.
+
+        Telegram file_unique_id may be stored as a scalar, an alias list, or
+        nested under media/file containers. The lookup side is read-only and
+        deliberately accepts all known layouts without changing the source DB.
+        """
+        value = str(uid or "").strip()
+        return {
+            "$or": [
+                {"file_unique_id": value},
+                {"file_unique_ids": value},
+                {"telegram_file_unique_id": value},
+                {"telegram_file_unique_ids": value},
+                {"photo_file_unique_id": value},
+                {"video_file_unique_id": value},
+                {"media.file_unique_id": value},
+                {"media.file_unique_ids": value},
+                {"media.telegram_file_unique_id": value},
+                {"media.telegram_file_unique_ids": value},
+                {"file.unique_id": value},
+                {"file.file_unique_id": value},
+                {"file_unique_ids.file_unique_id": value},
+                {"file_unique_ids.unique_id": value},
+            ]
+        }
+
+    @staticmethod
     def _collections(collections: list[str] | None) -> list[str]:
         return list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
 
@@ -108,9 +136,7 @@ class MongoExactLookup:
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not uid:
             return None
-        return await self._find_first(
-            {"$or": [{"file_unique_id": uid}, {"file_unique_ids": uid}, {"telegram_file_unique_id": uid}, {"photo_file_unique_id": uid}, {"video_file_unique_id": uid}, {"media.file_unique_id": uid}]}, collections
-        )
+        return await self._find_first(self._uid_query(uid), collections)
 
     async def global_exact_uid(
         self,
@@ -134,16 +160,7 @@ class MongoExactLookup:
         if unified_adding_db.enabled:
             try:
                 cursor = unified_adding_db.collection().find(
-                    {
-                        "$or": [
-                            {"file_unique_id": uid},
-                            {"file_unique_ids": uid},
-                            {"telegram_file_unique_id": uid},
-                            {"photo_file_unique_id": uid},
-                            {"video_file_unique_id": uid},
-                            {"media.file_unique_id": uid},
-                        ]
-                    },
+                    self._uid_query(uid),
                     projection=LOOKUP_PROJECTION,
                 ).limit(max(2, limit))
                 items: list[ItemSnapshot] = []
@@ -160,6 +177,10 @@ class MongoExactLookup:
                         items.append(item)
 
                 if not items:
+                    log.warning(
+                        "Global UID raw-match count=0 uid=%s",
+                        uid,
+                    )
                     return None
 
                 # Prefer the source family that just missed before falling
