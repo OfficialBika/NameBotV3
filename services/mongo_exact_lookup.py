@@ -204,6 +204,26 @@ class MongoExactLookup:
             return item
         return await self._find_first(self._uid_query_legacy(values), collections)
 
+    async def exact_file_ids(
+        self, file_ids: Iterable[str], collections: list[str] | None = None
+    ) -> ItemSnapshot | None:
+        """Exact file_id compatibility lookup after Telegram UID misses.
+
+        This is intentionally source-scoped. Telegram file_id is less stable
+        than file_unique_id and may be bot-specific, so it must not become a
+        global cross-source identity key.
+        """
+        values = [
+            str(value or "").strip()
+            for value in file_ids
+            if str(value or "").strip()
+        ]
+        values = list(dict.fromkeys(values))
+        if not values:
+            return None
+        return await self._find_first(self._file_id_query(values), collections)
+
+
     async def global_exact_uid(
         self,
         uid: str,
