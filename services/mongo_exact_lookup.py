@@ -122,7 +122,10 @@ class MongoExactLookup:
     async def exact_pixel_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not sha:
             return None
-        return await self._find_first({"photo_fingerprint.pixel_sha256": sha}, collections)
+        return await self._find_first(
+            {"$or": [{"pixel_sha256": sha}, {"photo_fingerprint.pixel_sha256": sha}]},
+            collections,
+        )
 
     async def exact_video_signature(
         self, signature: str, collections: list[str] | None = None
