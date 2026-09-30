@@ -31,12 +31,40 @@ class LookupBackend:
         item = snapshot.exact_origin(key, collections)
         return item or await mongo_exact_lookup.exact_origin(key, collections)
 
+    async def exact_uids(self, uids: list[str] | tuple[str, ...], collections: list[str] | None = None) -> ItemSnapshot | None:
+        if self.mode == "sqlite":
+            # SQLite exact_keys is the fast local path; Mongo remains authoritative.
+            for uid in uids:
+                item = await sqlite_index.exact_uid(uid, collections)
+                if item:
+                    return item
+            return await mongo_exact_lookup.exact_uids(uids, collections)
+        # Snapshot mode already indexes every alias in RAM, then falls back to Mongo.
+        for uid in uids:
+            item = snapshot.exact_uid(uid, collections)
+            if item:
+                return item
+        return await mongo_exact_lookup.exact_uids(uids, collections)
+
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             item = await sqlite_index.exact_uid(uid, collections)
             return item or await mongo_exact_lookup.exact_uid(uid, collections)
         item = snapshot.exact_uid(uid, collections)
         return item or await mongo_exact_lookup.exact_uid(uid, collections)
+
+    async def global_exact_uids(
+        self,
+        uids: list[str] | tuple[str, ...],
+        *,
+        preferred_collection: str = "items_character_catcher",
+        preferred_collections: list[str] | None = None,
+    ) -> ItemSnapshot | None:
+        return await mongo_exact_lookup.global_exact_uids(
+            uids,
+            preferred_collection=preferred_collection,
+            preferred_collections=preferred_collections,
+        )
 
     async def global_exact_uid(
         self,
