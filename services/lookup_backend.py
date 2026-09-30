@@ -80,6 +80,21 @@ class LookupBackend:
             preferred_collections=preferred_collections,
         )
 
+    async def catch_exact_compat(
+        self,
+        *,
+        uids: list[str] | tuple[str, ...] = (),
+        file_ids: list[str] | tuple[str, ...] = (),
+        character_id: str | int | None = None,
+    ) -> ItemSnapshot | None:
+        # Deliberately Catch-only. The compatibility path never broadens into
+        # another source collection.
+        return await mongo_exact_lookup.catch_exact_compat(
+            uids=uids,
+            file_ids=file_ids,
+            character_id=character_id,
+        )
+
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             item = await sqlite_index.exact_sha(sha, collections)
