@@ -175,6 +175,19 @@ class UnifiedAddingDB:
                     known_docs = 0
 
                 if source_count <= 0:
+                    # The current DB did not contain the canonical dataset. Only
+                    # now attempt cross-database discovery, so restricted Mongo
+                    # users still work when NameBot and Adding share DB_NAME.
+                    if not configured_name and db_name == settings.db_name:
+                        try:
+                            for name in await base_db.client.list_database_names():
+                                if name not in candidate_names:
+                                    candidate_names.append(name)
+                        except Exception as exc:
+                            log.warning(
+                                "Unified Adding DB cross-database discovery unavailable: %s",
+                                exc,
+                            )
                     continue
 
                 try:
