@@ -399,8 +399,11 @@ def resolve_lookup_scope(message: Message) -> LookupScope:
     # Character Catcher captions explicitly instruct the user to use /catch.
     # Always prefer its dedicated collection before any inferred source metadata.
     if cmd == "/catch" or is_character_catcher_spawn(message):
+        # /catch has two unified source keys: live Catch data and the forward-log
+        # mirror. Keep both source-scoped so migrated forwarded records are not
+        # skipped before the global UID fallback is attempted.
         return LookupScope(
-            collections=["items_character_catcher"],
+            collections=["items_character_catcher", "items_character_catcher_fw"],
             mode="command",
             command="/catch",
             source_collection="items_character_catcher",
