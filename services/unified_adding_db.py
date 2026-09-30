@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterable
 
-from config import settings
+from config import COLLECTION_TO_OUTPUT_COMMAND, settings
 from database.mongo import get_db
 
 log = logging.getLogger(__name__)
@@ -27,40 +27,91 @@ class UnifiedAddingDB:
         )
         self._enabled = False
         self._checked = False
+        self._db = None
+        self.db_name = ""
 
     async def detect(self, *, force: bool = False) -> bool:
         if self._checked and not force:
             return self._enabled
+
+        self._enabled = False
+        self._db = None
+        self.db_name = ""
 
         try:
             enabled_by_config = bool(
                 getattr(settings, "unified_adding_db_enabled", True)
             )
             if not enabled_by_config:
-                self._enabled = False
                 self._checked = True
                 log.info("Unified Adding DB adapter disabled by configuration")
                 return False
 
-            db = get_db()
-            names = await db.list_collection_names()
-            self._enabled = self.collection_name in names
-            self._checked = True
-            if self._enabled:
-                log.info(
-                    "Unified Adding DB detected collection=%s (read-only source of truth)",
-                    self.collection_name,
-                )
+            base_db = get_db()
+            configured_name = str(
+                getattr(settings, "unified_adding_db_name", "") or ""
+            ).strip()
+
+            # Explicit database name is authoritative. Without it, first inspect
+            # the current DB, then safely discover another DB on the same Mongo
+            # server that actually contains the unified characters + source_key data.
+            if configured_name:
+                candidate_names = [configured_name]
             else:
+                candidate_names = [settings.db_name]
+                try:
+                    for name in await base_db.client.list_database_names():
+                        if name not in candidate_names:
+                            candidate_names.append(name)
+                except Exception as exc:
+                    log.info("Unified Adding DB auto-discovery list failed: %s", exc)
+
+            known_sources = set(COLLECTION_TO_OUTPUT_COMMAND) - {"items_unknown"}
+
+            for db_name in candidate_names:
+                target_db = base_db.client[db_name]
+                try:
+                    names = await target_db.list_collection_names()
+                except Exception:
+                    continue
+                if self.collection_name not in names:
+                    continue
+
+                # For auto-discovery, avoid selecting an unrelated 'characters'
+                # collection. An explicit configured DB is accepted by collection
+                # presence alone.
+                if not configured_name:
+                    try:
+                        sample = await target_db[self.collection_name].find_one(
+                            {"source_key": {"$in": sorted(known_sources)}},
+                            {"source_key": 1},
+                            max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                        )
+                    except Exception:
+                        sample = None
+                    if not sample:
+                        continue
+
+                self._db = target_db
+                self.db_name = db_name
+                self._enabled = True
+                self._checked = True
                 log.info(
-                    "Unified Adding DB not detected collection=%s; using legacy collection mode",
+                    "Unified Adding DB detected db=%s collection=%s (read-only source of truth)",
+                    db_name,
                     self.collection_name,
                 )
+                return True
+
+            self._checked = True
+            log.info(
+                "Unified Adding DB not detected collection=%s; using legacy collection mode",
+                self.collection_name,
+            )
         except Exception as exc:
-            self._enabled = False
             self._checked = True
             log.warning("Unified Adding DB detection failed: %s", exc)
-        return self._enabled
+        return False
 
     @property
     def enabled(self) -> bool:
@@ -95,7 +146,7 @@ class UnifiedAddingDB:
         return value or str(fallback or "").strip().lower()
 
     def collection(self):
-        return get_db()[self.collection_name]
+        return (self._db or get_db())[self.collection_name]
 
 
 unified_adding_db = UnifiedAddingDB()
