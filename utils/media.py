@@ -27,8 +27,18 @@ def _document_media_type(document) -> str | None:
 
 def extract_media(message: Message) -> ExtractedMedia | None:
     target = message.reply_to_message or message
-    if getattr(target, "photo", None):
-        return ExtractedMedia(target.photo[-1], "photo", target)
+    photos = getattr(target, "photo", None) or []
+    if photos:
+        usable = [p for p in photos if getattr(p, "file_id", None)]
+        if usable:
+            selected = max(
+                usable,
+                key=lambda p: (
+                    int(getattr(p, "width", 0) or 0) * int(getattr(p, "height", 0) or 0),
+                    int(getattr(p, "file_size", 0) or 0),
+                ),
+            )
+            return ExtractedMedia(selected, "photo", target)
     if getattr(target, "video", None):
         return ExtractedMedia(target.video, "video", target)
     if getattr(target, "animation", None):
