@@ -112,6 +112,85 @@ class MongoExactLookup:
             {"$or": [{"file_unique_id": uid}, {"file_unique_ids": uid}, {"telegram_file_unique_id": uid}, {"photo_file_unique_id": uid}, {"video_file_unique_id": uid}, {"media.file_unique_id": uid}]}, collections
         )
 
+    async def global_exact_uid(
+        self,
+        uid: str,
+        *,
+        preferred_collection: str = "items_character_catcher",
+        limit: int = 20,
+    ) -> ItemSnapshot | None:
+        """Global exact Telegram UID recovery with deterministic ambiguity handling.
+
+        Unified Adding DB is one physical collection, so fetch a small exact-UID
+        candidate set and prefer the primary Catch source when the same Telegram
+        UID exists under multiple logical sources. If there is no preferred source,
+        accept the UID only when it is unique. This prevents arbitrary cross-source
+        matches while still giving Auto and Manual lookup the same global fallback.
+        """
+        if not uid:
+            return None
+
+        if unified_adding_db.enabled:
+            try:
+                cursor = unified_adding_db.collection().find(
+                    {
+                        "$or": [
+                            {"file_unique_id": uid},
+                            {"file_unique_ids": uid},
+                            {"telegram_file_unique_id": uid},
+                            {"photo_file_unique_id": uid},
+                            {"video_file_unique_id": uid},
+                            {"media.file_unique_id": uid},
+                        ]
+                    },
+                    projection=LOOKUP_PROJECTION,
+                ).limit(max(2, limit))
+                items: list[ItemSnapshot] = []
+                async for doc in cursor:
+                    source = unified_adding_db.source_key(doc)
+                    if source not in COLLECTION_TO_OUTPUT_COMMAND:
+                        continue
+                    item = parse_item(
+                        source,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        doc,
+                    )
+                    if item:
+                        items.append(item)
+
+                if not items:
+                    return None
+
+                preferred = next(
+                    (
+                        item for item in items
+                        if item.collection == preferred_collection
+                    ),
+                    None,
+                )
+                if preferred:
+                    return preferred
+
+                if len(items) == 1:
+                    return items[0]
+
+                log.warning(
+                    "Global UID ambiguous uid=%s candidates=%s sources=%s",
+                    uid,
+                    len(items),
+                    [item.collection for item in items],
+                )
+                return None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("Unified global UID lookup failed uid=%s error=%s", uid, exc)
+                return None
+
+        # Preserve legacy collection-mode behavior when the unified collection
+        # is not enabled. This branch is read-only and intentionally unchanged.
+        return await self.exact_uid(uid, None)
+
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not sha:
             return None
