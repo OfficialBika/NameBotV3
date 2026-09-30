@@ -269,7 +269,7 @@ class Settings:
     mongo_connect_timeout_ms: int = _int("MONGO_CONNECT_TIMEOUT_MS", 30000)
     mongo_socket_timeout_ms: int = _int("MONGO_SOCKET_TIMEOUT_MS", 300000)
     mongo_exact_query_timeout_ms: int = _int("MONGO_EXACT_QUERY_TIMEOUT_MS", 5000)
-
+    # Adding-Helperbot unified DB compatibility. When the configured DB contains\n    # the canonical characters collection, NameBotV3 consumes it read-only and\n    # maps its source_key values to the existing logical collection names.\n    unified_adding_db_enabled: bool = _bool("UNIFIED_ADDING_DB_ENABLED", True)\n    unified_adding_collection: str = os.getenv("UNIFIED_ADDING_COLLECTION", "characters").strip() or "characters"\n
     # Lookup backend selector. snapshot keeps the existing full-RAM engine; sqlite uses
     # MongoDB for exact lookups and a local persistent SQLite fingerprint index for similarity.
     lookup_engine_mode: str = os.getenv("LOOKUP_ENGINE_MODE", "snapshot").strip().lower() or "snapshot"
