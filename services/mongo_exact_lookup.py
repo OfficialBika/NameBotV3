@@ -132,7 +132,15 @@ class MongoExactLookup:
     ) -> ItemSnapshot | None:
         if not signature:
             return None
-        return await self._find_first({"video_fingerprint.video_signature": signature}, collections)
+        return await self._find_first(
+            {
+                "$or": [
+                    {"video_signature": signature},
+                    {"video_fingerprint.video_signature": signature},
+                ]
+            },
+            collections,
+        )
 
     async def exact_origin(
         self, key: tuple[int, int], collections: list[str] | None = None
