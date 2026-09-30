@@ -38,6 +38,18 @@ class LookupBackend:
         item = snapshot.exact_uid(uid, collections)
         return item or await mongo_exact_lookup.exact_uid(uid, collections)
 
+    async def global_exact_uid(
+        self,
+        uid: str,
+        *,
+        preferred_collection: str = "items_character_catcher",
+    ) -> ItemSnapshot | None:
+        # Global UID is always authoritative to MongoDB in the unified-DB path.
+        return await mongo_exact_lookup.global_exact_uid(
+            uid,
+            preferred_collection=preferred_collection,
+        )
+
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             item = await sqlite_index.exact_sha(sha, collections)
