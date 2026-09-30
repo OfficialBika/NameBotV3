@@ -145,17 +145,17 @@ class LookupService:
                             )
 
                     # Global UID recovery is intentionally restricted:
-                    # - manual lookup may recover globally when the source is unknown;
+                    # - manual lookup may recover globally;
                     # - Catch spawn is a controlled exception;
-                    # - auto lookup with a known source stays source-scoped to prevent
-                    # cross-source false positives.
+                    # - auto lookup with a known source stays source-scoped.
                     allow_global_exact = bool(manual or catch_spawn_global_fallback or not collections)
-                        if allow_global_exact:
-                                for candidate_uid in file_uids:
-                                item = await lookup_backend.exact_uid(
-                                    candidate_uid,
-                                    ["items_character_catcher"],
-                                )
+                    if allow_global_exact:
+                        # Catch source gets priority for the legacy spawn path.
+                        for candidate_uid in file_uids:
+                            item = await lookup_backend.exact_uid(
+                                candidate_uid,
+                                ["items_character_catcher"],
+                            )
                             if item:
                                 hit = True
                                 log.info(
@@ -172,8 +172,8 @@ class LookupService:
                                     1.0,
                                 )
 
-                            for candidate_uid in file_uids:
-                                item = await lookup_backend.exact_uid(candidate_uid, None)
+                        for candidate_uid in file_uids:
+                            item = await lookup_backend.exact_uid(candidate_uid, None)
                             if item:
                                 hit = True
                                 log.info(
