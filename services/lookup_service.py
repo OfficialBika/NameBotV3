@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import re
 import time
 from dataclasses import dataclass, replace
 
@@ -15,6 +16,7 @@ from services.lookup_backend import lookup_backend
 from services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
 from services.source_resolver import (
+    is_character_catcher_spawn,
     output_command_from_message,
     resolve_lookup_scope,
     source_origin_key,
@@ -32,6 +34,44 @@ except Exception:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 
+def _telegram_file_ids(message: Message, media) -> list[str]:
+    values: list[str] = []
+    if media.media_type == "photo":
+        for photo in (getattr(message, "photo", None) or []):
+            file_id = str(getattr(photo, "file_id", "") or "").strip()
+            if file_id and file_id not in values:
+                values.append(file_id)
+    file_id = str(getattr(media.obj, "file_id", "") or "").strip()
+    if file_id and file_id not in values:
+        values.append(file_id)
+    return values
+
+
+CATCH_CHARACTER_ID_RE = re.compile(
+    r"(?:^|[\\n\\r])\\s*(\\d+)\\s*:\\s*.+?(?=$|[\\n\\r])"
+    r"|(?:character\\s*)?(?:id|item\\s*id|card\\s*id)\\s*[:#\\-]?\\s*(\\d+)",
+    re.I | re.M,
+)
+
+
+def _catch_character_id(message: Message) -> str | None:
+    parts: list[str] = []
+    for obj in (
+        message,
+        getattr(message, "external_reply", None),
+        getattr(message, "reply_to_message", None),
+    ):
+        if obj is None:
+            continue
+        for attr in ("caption", "text", "html_text", "md_text"):
+            value = getattr(obj, attr, None)
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+    text = "\\n".join(parts)
+    match = CATCH_CHARACTER_ID_RE.search(text)
+    if not match:
+        return None
+    return (match.group(1) or match.group(2) or "").strip() or None
 def _telegram_uids(message: Message, media) -> list[str]:
     """Return every native Telegram file_unique_id exposed by the media."""
     values: list[str] = []
@@ -206,6 +246,51 @@ class LookupService:
                         collections,
                         file_uids,
                     )
+
+                    # 3) Catch-only compatibility recovery.
+                    # Older Catch records can exist outside the canonical unified
+                    # UID layout (legacy physical collection or legacy file/id fields).
+                    # Never use this path for another source.
+                    catch_lookup = bool(
+                        scope.command == "/catch"
+                        or scope.source_collection in {
+                            "items_character_catcher",
+                            "items_character_catcher_fw",
+                        }
+                        or is_character_catcher_spawn(source_message)
+                    )
+                    if catch_lookup:
+                        catch_character_id = _catch_character_id(source_message)
+                        catch_file_ids = _telegram_file_ids(source_message, media)
+                        compat = await lookup_backend.catch_exact_compat(
+                            uids=file_uids,
+                            file_ids=catch_file_ids,
+                            character_id=catch_character_id,
+                        )
+                        if compat:
+                            hit = True
+                            for candidate_uid in file_uids:
+                                self.result_cache.set(f"uid:{filter_tag}:{candidate_uid}", compat)
+                                self.result_cache.set(f"uid:all:{candidate_uid}", compat)
+                            log.info(
+                                "Catch compatibility recovery message=%s source=%s name=%s "
+                                "character_id=%s file_ids=%s",
+                                getattr(message, "message_id", None),
+                                compat.collection,
+                                compat.name,
+                                catch_character_id,
+                                len(catch_file_ids),
+                            )
+                            return self._done(
+                                self._with_command(
+                                    compat,
+                                    output_command_from_message(source_message, compat.collection),
+                                    source_message,
+                                ),
+                                "catch_compat",
+                                started,
+                                1.0,
+                            )
 
                 # Exact matching is always the fast path, but an exact miss must not
                 # make previously working hash/similarity lookup return unknown.
