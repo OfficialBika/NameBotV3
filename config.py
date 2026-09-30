@@ -274,9 +274,13 @@ class Settings:
     # maps its source_key values to the existing logical collection names.
     unified_adding_db_enabled: bool = _bool("UNIFIED_ADDING_DB_ENABLED", True)
     unified_adding_collection: str = os.getenv("UNIFIED_ADDING_COLLECTION", "characters").strip() or "characters"
-    # Optional: keep NameBot app/state DB separate from Adding-Helperbot DB. If empty,
-    # the adapter auto-detects a database containing the unified characters collection.
-    unified_adding_db_name: str = os.getenv("UNIFIED_ADDING_DB_NAME", "").strip()
+    # Physical MongoDB database used by Adding-Helperbot's canonical `characters`
+    # collection. Prefer the explicit unified name; keep ADDING_DB_NAME as a
+    # compatibility alias. When both are omitted, DB_NAME is the same-db default.
+    unified_adding_db_name: str = os.getenv(
+        "UNIFIED_ADDING_DB_NAME",
+        os.getenv("ADDING_DB_NAME", os.getenv("DB_NAME", "")),
+    ).strip()
 
     # Lookup backend selector. snapshot keeps the existing full-RAM engine; sqlite uses
     # MongoDB for exact lookups and a local persistent SQLite fingerprint index for similarity.
