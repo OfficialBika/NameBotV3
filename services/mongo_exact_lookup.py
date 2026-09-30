@@ -68,14 +68,14 @@ class MongoExactLookup:
         if not uid:
             return None
         return await self._find_first(
-            {"$or": [{"file_unique_id": uid}, {"file_unique_ids": uid}]}, collections
+            {"$or": [{"file_unique_id": uid}, {"file_unique_ids": uid}, {"telegram_file_unique_id": uid}, {"photo_file_unique_id": uid}, {"video_file_unique_id": uid}, {"media.file_unique_id": uid}]}, collections
         )
 
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not sha:
             return None
         return await self._find_first(
-            {"$or": [{"sha256": sha}, {"sha256_aliases": sha}]}, collections
+            {"$or": [{"sha256": sha}, {"sha256_aliases": sha}, {"media.sha256": sha}, {"file.sha256": sha}, {"media_sha256": sha}, {"hash": sha}, {"file_hash": sha}]}, collections
         )
 
     async def exact_pixel_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
