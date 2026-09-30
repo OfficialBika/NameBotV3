@@ -169,6 +169,7 @@ class LookupService:
                         item = await lookup_backend.global_exact_uid(
                             candidate_uid,
                             preferred_collection="items_character_catcher",
+                            preferred_collections=collections,
                         )
                         if item:
                             hit = True
