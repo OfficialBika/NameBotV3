@@ -33,12 +33,10 @@ class LookupBackend:
 
     async def exact_uids(self, uids: list[str] | tuple[str, ...], collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
-            # SQLite exact_keys is the fast local path; Mongo remains authoritative.
-            for uid in uids:
-                item = await sqlite_index.exact_uid(uid, collections)
-                if item:
-                    return item
-            return await mongo_exact_lookup.exact_uids(uids, collections)
+            # One local SQL lookup for all PhotoSize UIDs. Mongo is the authoritative
+            # fallback only when SQLite has no validated result.
+            item = await sqlite_index.exact_uids(uids, collections=collections, preferred_collections=collections)
+            return item or await mongo_exact_lookup.exact_uids(uids, collections)
         # Snapshot mode already indexes every alias in RAM, then falls back to Mongo.
         for uid in uids:
             item = snapshot.exact_uid(uid, collections)
@@ -60,6 +58,19 @@ class LookupBackend:
         preferred_collection: str = "items_character_catcher",
         preferred_collections: list[str] | None = None,
     ) -> ItemSnapshot | None:
+        if self.mode == "sqlite":
+            # Global exact lookup is also SQLite-first. Preferred source order is
+            # preserved; Mongo is queried only when validated SQLite has no match.
+            preferred = list(preferred_collections or [])
+            if preferred_collection and preferred_collection not in preferred:
+                preferred.append(preferred_collection)
+            item = await sqlite_index.exact_uids(
+                uids,
+                collections=None,
+                preferred_collections=preferred,
+            )
+            if item:
+                return item
         return await mongo_exact_lookup.global_exact_uids(
             uids,
             preferred_collection=preferred_collection,
