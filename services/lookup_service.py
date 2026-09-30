@@ -110,9 +110,9 @@ class LookupService:
                     file_uids,
                 )
 
-                # 1) Source-scoped Telegram UID first. We intentionally skip this
-                # stage when the source is unknown; the next stage is the explicit
-                # global UID lookup.
+                # 1) Source-scoped Telegram UID first. Check all native
+                # Telegram PhotoSize/file UIDs in one query, matching the working
+                # Adding&Helper lookup path and avoiding one Mongo request per UID.
                 if file_uids:
                     if collections:
                         for candidate_uid in file_uids:
@@ -126,27 +126,31 @@ class LookupService:
                                     started,
                                     1.0,
                                 )
-                            item = await lookup_backend.exact_uid(candidate_uid, collections)
-                            if item:
-                                hit = True
-                                self.result_cache.set(cache_key, item)
-                                log.info(
-                                    "UID DEBUG source_match message=%s source=%s name=%s uid=%s",
-                                    getattr(message, "message_id", None),
-                                    item.collection,
-                                    item.name,
-                                    candidate_uid,
-                                )
-                                return self._done(
-                                    self._with_command(item, output_command, source_message),
-                                    "uid",
-                                    started,
-                                    1.0,
-                                )
 
-                    # 2) Global exact Telegram UID. This stage is mandatory for
-                    # BOTH Auto and Manual lookup after source-scoped UID misses.
-                    # It is authoritative to MongoDB in the unified Adding DB path.
+                        item = await lookup_backend.exact_uids(file_uids, collections)
+                        if item:
+                            hit = True
+                            for candidate_uid in file_uids:
+                                self.result_cache.set(
+                                    f"uid:{filter_tag}:{candidate_uid}",
+                                    item,
+                                )
+                            log.info(
+                                "UID DEBUG source_match message=%s source=%s name=%s uids=%s",
+                                getattr(message, "message_id", None),
+                                item.collection,
+                                item.name,
+                                file_uids,
+                            )
+                            return self._done(
+                                self._with_command(item, output_command, source_message),
+                                "uid",
+                                started,
+                                1.0,
+                            )
+
+                    # 2) Global exact Telegram UID. Check all candidate UIDs
+                    # together after source-scoped lookup misses.
                     for candidate_uid in file_uids:
                         global_cache_key = f"uid:all:{candidate_uid}"
                         cached = self.result_cache.get(global_cache_key)
@@ -166,31 +170,32 @@ class LookupService:
                                 1.0,
                             )
 
-                        item = await lookup_backend.global_exact_uid(
-                            candidate_uid,
-                            preferred_collection="items_character_catcher",
-                            preferred_collections=collections,
+                    item = await lookup_backend.global_exact_uids(
+                        file_uids,
+                        preferred_collection="items_character_catcher",
+                        preferred_collections=collections,
+                    )
+                    if item:
+                        hit = True
+                        for candidate_uid in file_uids:
+                            self.result_cache.set(f"uid:all:{candidate_uid}", item)
+                        log.info(
+                            "UID DEBUG global_exact_recovery message=%s source=%s name=%s uids=%s",
+                            getattr(message, "message_id", None),
+                            item.collection,
+                            item.name,
+                            file_uids,
                         )
-                        if item:
-                            hit = True
-                            self.result_cache.set(global_cache_key, item)
-                            log.info(
-                                "UID DEBUG global_exact_recovery message=%s source=%s name=%s uid=%s",
-                                getattr(message, "message_id", None),
-                                item.collection,
-                                item.name,
-                                candidate_uid,
-                            )
-                            return self._done(
-                                self._with_command(
-                                    item,
-                                    output_command_from_message(source_message, item.collection),
-                                    source_message,
-                                ),
-                                "uid_global",
-                                started,
-                                1.0,
-                            )
+                        return self._done(
+                            self._with_command(
+                                item,
+                                output_command_from_message(source_message, item.collection),
+                                source_message,
+                            ),
+                            "uid_global",
+                            started,
+                            1.0,
+                        )
 
                     log.warning(
                         "UID DEBUG source_and_global_miss message=%s requested_sources=%s",
