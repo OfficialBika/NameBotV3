@@ -232,7 +232,20 @@ NAME_FIELDS = ["name", "character_name", "char_name", "item_name", "card_name", 
 ANIME_FIELDS = ["anime_name", "anime", "series", "movie", "category", "media.series", "character.series"]
 ID_FIELDS = ["card_id", "id", "item_id", "char_id", "character_id", "media.id", "character.id"]
 RARITY_FIELDS = ["rarity", "rank", "tier", "class", "media.rarity", "character.rarity"]
-FILE_UID_FIELDS = ["file_unique_id", "telegram_file_unique_id", "photo_file_unique_id", "video_file_unique_id", "media.file_unique_id", "media.telegram_file_unique_id", "file.unique_id", "file.file_unique_id"]
+FILE_UID_FIELDS = [
+    "file_unique_id",
+    "telegram_file_unique_id",
+    "photo_file_unique_id",
+    "video_file_unique_id",
+    "media.file_unique_id",
+    "media.telegram_file_unique_id",
+    "media.file_unique_ids",
+    "media.telegram_file_unique_ids",
+    "file.unique_id",
+    "file.file_unique_id",
+    "file_unique_ids.file_unique_id",
+    "file_unique_ids.unique_id",
+]
 SHA_FIELDS = ["sha256", "media_sha256", "hash", "file_hash", "media.sha256", "file.sha256"]
 PHASH_FIELDS = ["phash", "photo_fingerprint.phash", "photo_phash", "image_phash", "media.phash", "file.phash"]
 FRAME_HASH_FIELDS = ["frame_hashes", "video_frame_hashes", "frames", "media.frame_hashes", "file.frame_hashes"]
@@ -393,7 +406,18 @@ def parse_item(collection: str, default_command: str, doc: dict) -> ItemSnapshot
         item_key=_clean(doc.get("item_key")),
         name_aliases=_strings(doc.get("name_aliases")),
         file_unique_id=_clean(_first_present(doc, FILE_UID_FIELDS)),
-        file_unique_ids=_strings(doc.get("file_unique_ids")),
+        file_unique_ids=tuple(
+            dict.fromkeys(
+                value
+                for field_name in (
+                    "file_unique_ids",
+                    "telegram_file_unique_ids",
+                    "media.file_unique_ids",
+                    "media.telegram_file_unique_ids",
+                )
+                for value in _strings(_first_present(doc, [field_name]))
+            )
+        ),
         sha256=_clean(_first_present(doc, SHA_FIELDS)),
         sha256_aliases=_strings(doc.get("sha256_aliases")),
         phash=phash,
