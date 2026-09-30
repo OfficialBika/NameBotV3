@@ -52,6 +52,47 @@ class LookupBackend:
             preferred_collections=preferred_collections,
         )
 
+    async def exact_uids(
+        self,
+        uids: list[str] | tuple[str, ...],
+        collections: list[str] | None = None,
+    ) -> ItemSnapshot | None:
+        values = [str(uid or "").strip() for uid in uids if str(uid or "").strip()]
+        values = list(dict.fromkeys(values))
+        if not values:
+            return None
+
+        # In SQLite mode, MongoDB remains the authoritative source for the
+        # unified Adding collection. SQLite is only a legacy/secondary fallback.
+        if self.mode == "sqlite":
+            item = await mongo_exact_lookup.exact_uids(values, collections)
+            if item:
+                return item
+            for uid in values:
+                item = await sqlite_index.exact_uid(uid, collections)
+                if item:
+                    return item
+            return None
+
+        for uid in values:
+            item = snapshot.exact_uid(uid, collections)
+            if item:
+                return item
+        return await mongo_exact_lookup.exact_uids(values, collections)
+
+    async def global_exact_uids(
+        self,
+        uids: list[str] | tuple[str, ...],
+        *,
+        preferred_collection: str = "items_character_catcher",
+        preferred_collections: list[str] | None = None,
+    ) -> ItemSnapshot | None:
+        return await mongo_exact_lookup.global_exact_uids(
+            uids,
+            preferred_collection=preferred_collection,
+            preferred_collections=preferred_collections,
+        )
+
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             item = await sqlite_index.exact_sha(sha, collections)
