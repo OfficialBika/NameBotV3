@@ -202,11 +202,12 @@ class UnifiedAddingDB:
                 max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
             )
             try:
-                index_names = sorted(
-                    info.get("name", "")
-                    async for info in collection.list_indexes()
-                    if info.get("name")
-                )
+                index_names = []
+                async for info in collection.list_indexes():
+                    name = info.get("name")
+                    if name:
+                        index_names.append(str(name))
+                index_names.sort()
             except Exception as exc:
                 index_names = [f"<index-list-failed:{exc}>"]
 
