@@ -118,7 +118,10 @@ class SQLiteFingerprintIndex:
         self.last_sync_at = await self._load_watermark()
         count = await self.count()
         schema_version = await self._schema_version()
-        self.ready = count > 0 and schema_version == SQLITE_INDEX_SCHEMA_VERSION
+        # Never serve a persisted SQLite snapshot as authoritative immediately
+        # after restart. ensure_built() validates completeness first; until then
+        # callers fall back to MongoDB, which remains the source of truth.
+        self.ready = False
         log.info(
             "SQLite fingerprint index opened path=%s items=%s ready=%s schema=%s fields=%s",
             path, count, self.ready, schema_version or "legacy", len(SQLITE_ITEM_FIELDS),
@@ -504,7 +507,7 @@ class SQLiteFingerprintIndex:
 
     async def _exact_lookup(self, key_type: str, key_value: str,
                             collections: list[str] | None = None) -> ItemSnapshot | None:
-        if self.db is None or not key_value:
+        if not self.ready or self.db is None or not key_value:
             return None
         selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
         if not selected:
@@ -520,8 +523,78 @@ class SQLiteFingerprintIndex:
         await cursor.close()
         return self._item_from_json(str(row["item_json"])) if row else None
 
+    async def exact_uids(
+        self,
+        uids: list[str] | tuple[str, ...],
+        collections: list[str] | None = None,
+        preferred_collections: list[str] | None = None,
+    ) -> ItemSnapshot | None:
+        """Bulk exact UID lookup from the validated SQLite index.
+
+        This is a single local SQL query for all Telegram PhotoSize UIDs. When
+        multiple sources contain the same UID, source preference is honored and
+        ambiguous results are rejected rather than choosing randomly.
+        """
+        if not self.ready or self.db is None:
+            return None
+        values = list(dict.fromkeys(
+            str(uid or "").strip() for uid in uids if str(uid or "").strip()
+        ))
+        if not values:
+            return None
+
+        selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
+        if not selected:
+            return None
+
+        marks = ",".join("?" for _ in values)
+        collection_marks = ",".join("?" for _ in selected)
+        cursor = await self.db.execute(
+            f"SELECT fi.collection, fi.mongo_id, fi.item_json "
+            f"FROM exact_keys ek "
+            f"JOIN fingerprint_items fi "
+            f"ON fi.collection=ek.collection AND fi.mongo_id=ek.mongo_id "
+            f"WHERE ek.key_type='uid' AND ek.key_value IN ({marks}) "
+            f"AND ek.collection IN ({collection_marks}) "
+            f"LIMIT 100",
+            [*values, *selected],
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        if not rows:
+            return None
+
+        items: list[ItemSnapshot] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (str(row["collection"]), str(row["mongo_id"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            item = self._item_from_json(str(row["item_json"]))
+            if item:
+                items.append(item)
+
+        if not items:
+            return None
+
+        preferences: list[str] = []
+        for value in (preferred_collections or collections or []):
+            value = str(value or "").strip()
+            if value and value not in preferences:
+                preferences.append(value)
+
+        for preferred in preferences:
+            item = next((candidate for candidate in items if candidate.collection == preferred), None)
+            if item:
+                return item
+
+        if len(items) == 1:
+            return items[0]
+        return None
+
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
-        return await self._exact_lookup("uid", uid, collections)
+        return await self.exact_uids([uid], collections=collections)
 
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         return await self._exact_lookup("sha", sha, collections)
