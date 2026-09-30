@@ -10,6 +10,7 @@ from database.mongo import get_db
 from services.snapshot_cache import snapshot
 from services.sqlite_fingerprint_index import sqlite_index
 from services.lookup_service import lookup_service
+from services.unified_adding_db import unified_adding_db
 
 log = logging.getLogger(__name__)
 
@@ -137,6 +138,17 @@ class AddingDataSync:
         return True
 
     async def run(self) -> None:
+        # The unified Adding DB is consumed as a read-only source of truth.
+        # Do not create event/state collections there; SQLite/snapshot refresh
+        # logic reads characters directly from the configured Mongo database.
+        await unified_adding_db.detect()
+        if unified_adding_db.enabled:
+            log.info(
+                "Adding→NameBot event sync disabled for unified read-only DB collection=%s",
+                unified_adding_db.collection_name,
+            )
+            return
+
         await self.ensure_indexes()
         # Never trust an old local cursor after process restart. The current
         # MongoDB state is authoritative and the normal startup load already
