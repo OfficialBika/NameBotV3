@@ -96,8 +96,16 @@ class MongoExactLookup:
         chat_id, message_id = key
         return await self._find_first(
             {
-                "source_origin.chat_id": int(chat_id),
-                "source_origin.message_id": int(message_id),
+                "$or": [
+                    {
+                        "source_origin.chat_id": int(chat_id),
+                        "source_origin.message_id": int(message_id),
+                    },
+                    {
+                        "origin_chat_id": int(chat_id),
+                        "origin_message_id": int(message_id),
+                    },
+                ]
             },
             collections,
         )
