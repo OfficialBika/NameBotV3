@@ -280,7 +280,6 @@ class Settings:
     unified_adding_db_name: str = (
         os.getenv("UNIFIED_ADDING_DB_NAME")
         or os.getenv("ADDING_DB_NAME")
-        or os.getenv("DB_NAME")
         or ""
     ).strip()
 
