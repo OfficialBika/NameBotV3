@@ -247,6 +247,35 @@ class LookupService:
                         file_uids,
                     )
 
+                    # 3) Source-scoped file_id compatibility fallback.
+                    # Adding-Helperbot also persists file_ids/file_id alongside the
+                    # exact Telegram UID. This recovers older records whose UID
+                    # aliases were not stored in the canonical array.
+                    file_ids = _telegram_file_ids(source_message, media)
+                    if collections and file_ids:
+                        file_item = await lookup_backend.exact_file_ids(file_ids, collections)
+                        if file_item:
+                            hit = True
+                            for candidate_uid in file_uids:
+                                self.result_cache.set(f"uid:{filter_tag}:{candidate_uid}", file_item)
+                            log.info(
+                                "FILE_ID DEBUG source_match message=%s source=%s name=%s file_ids=%s",
+                                getattr(message, "message_id", None),
+                                file_item.collection,
+                                file_item.name,
+                                len(file_ids),
+                            )
+                            return self._done(
+                                self._with_command(
+                                    file_item,
+                                    output_command_from_message(source_message, file_item.collection),
+                                    source_message,
+                                ),
+                                "file_id",
+                                started,
+                                1.0,
+                            )
+
                     # 3) Catch-only compatibility recovery.
                     # Older Catch records can exist outside the canonical unified
                     # UID layout (legacy physical collection or legacy file/id fields).
