@@ -195,13 +195,17 @@ async def build_stats_text(message: Message) -> str:
 
 @router.message(Command("status"))
 async def status_cmd(message: Message) -> None:
+    user_id = message.from_user.id if message.from_user else None
+    if not (user_id and user_id in settings.owner_ids):
+        await safe_reply(message, "❌ Owner only command.")
+        return
     await safe_reply(message, await build_status_text(message))
 
 
 @router.message(Command("stats"))
 async def stats_cmd(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else None
-    if not is_owner_or_sudo(user_id):
+    if not (user_id and user_id in settings.owner_ids):
         await safe_reply(message, "❌ Owner only command.")
         return
     await safe_reply(message, await build_stats_text(message))
