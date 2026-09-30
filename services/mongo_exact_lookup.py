@@ -164,9 +164,15 @@ class MongoExactLookup:
                     projection=LOOKUP_PROJECTION,
                 ).limit(max(2, limit))
                 items: list[ItemSnapshot] = []
+                raw_matches = 0
+                parsed_matches = 0
+                unknown_sources: list[str] = []
                 async for doc in cursor:
+                    raw_matches += 1
                     source = unified_adding_db.source_key(doc)
                     if source not in COLLECTION_TO_OUTPUT_COMMAND:
+                        if source not in unknown_sources:
+                            unknown_sources.append(source or "<empty>")
                         continue
                     item = parse_item(
                         source,
@@ -174,12 +180,16 @@ class MongoExactLookup:
                         doc,
                     )
                     if item:
+                        parsed_matches += 1
                         items.append(item)
 
                 if not items:
                     log.warning(
-                        "Global UID raw-match count=0 uid=%s",
+                        "Global UID miss uid=%s raw_matches=%s parsed_matches=%s unknown_sources=%s",
                         uid,
+                        raw_matches,
+                        parsed_matches,
+                        unknown_sources,
                     )
                     return None
 
