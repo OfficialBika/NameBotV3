@@ -61,9 +61,13 @@ def _media_filter(message: Message) -> bool:
     return bool(getattr(message, "photo", None) or getattr(message, "video", None) or getattr(message, "animation", None) or _supported_document(message))
 
 
-@router.message(F.func(_media_filter))
+@router.message(F.photo | F.video | F.animation | F.document)
 async def auto_lookup(message: Message) -> None:
     started = time.perf_counter()
+    # Use explicit Telegram media filters rather than relying only on a custom
+    # MagicFilter callable. The final guard keeps unsupported documents out.
+    if not _media_filter(message):
+        return
     if message.from_user:
         asyncio.create_task(remember_user(message.from_user.id, message.from_user.username))
     if not await can_auto_lookup(message):
