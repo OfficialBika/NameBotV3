@@ -15,7 +15,7 @@ from services.source_blocker import blocked_source_text, is_blocked_source
 from utils.telegram_safe import safe_reply
 
 router = Router(name="manual_lookup")
-MANUAL_RE = re.compile(r"^\\s*(?P<cmd>/waifu|/wa|/w|\.waifu|\.wa|\.w|/name|\.name|/loot|/bika|/pick|/ziceko|/orin|/dao)(?:@(?P<bot>[A-Za-z0-9_]+))?(?:\\s|$)", re.I)
+MANUAL_RE = re.compile(r"^\s*(?P<cmd>/waifu|/wa|/w|\.waifu|\.wa|\.w|/name|\.name|/loot|/bika|/pick|/ziceko|/orin|/dao)(?:@(?P<bot>[A-Za-z0-9_]+))?(?:\s|$)", re.I)
 _seen: dict[str, float] = {}
 
 
