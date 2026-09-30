@@ -68,6 +68,14 @@ class UnifiedAddingDB:
 
             known_sources = set(COLLECTION_TO_OUTPUT_COMMAND) - {"items_unknown"}
 
+            # When DB_NAME is not explicit, several databases may contain a
+            # collection named "characters". Never blindly take the first one:
+            # an older/stale NameBot database can contain a few source records
+            # while the real Adding DB contains the complete unified dataset.
+            # Rank candidates by source coverage and document count, then use the
+            # best candidate as the read-only source of truth.
+            candidates: list[tuple[int, int, str]] = []
+
             for db_name in candidate_names:
                 target_db = base_db.client[db_name]
                 try:
@@ -77,21 +85,42 @@ class UnifiedAddingDB:
                 if self.collection_name not in names:
                     continue
 
-                # For auto-discovery, avoid selecting an unrelated 'characters'
-                # collection. An explicit configured DB is accepted by collection
-                # presence alone.
+                collection = target_db[self.collection_name]
+
                 if not configured_name:
                     try:
-                        sample = await target_db[self.collection_name].find_one(
-                            {"source_key": {"$in": sorted(known_sources)}},
-                            {"source_key": 1},
-                            max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
-                        )
+                        source_rows = await collection.aggregate([
+                            {"$match": {"source_key": {"$in": sorted(known_sources)}}},
+                            {"$group": {"_id": "$source_key", "n": {"$sum": 1}}},
+                            {"$group": {"_id": None, "source_count": {"$sum": 1}, "known_docs": {"$sum": "$n"}}},
+                        ], maxTimeMS=max(100, settings.mongo_exact_query_timeout_ms)).to_list(length=1)
+                        stats = source_rows[0] if source_rows else {}
+                        source_count = int(stats.get("source_count", 0) or 0)
+                        known_docs = int(stats.get("known_docs", 0) or 0)
                     except Exception:
-                        sample = None
-                    if not sample:
+                        source_count = 0
+                        known_docs = 0
+
+                    if source_count <= 0:
                         continue
 
+                    try:
+                        total_docs = int(await collection.estimated_document_count())
+                    except Exception:
+                        total_docs = known_docs
+
+                    candidates.append((source_count, total_docs, db_name))
+                    log.info(
+                        "Unified Adding DB candidate db=%s collection=%s known_sources=%s known_docs=%s total_docs=%s",
+                        db_name,
+                        self.collection_name,
+                        source_count,
+                        known_docs,
+                        total_docs,
+                    )
+                    continue
+
+                # Explicit UNIFIED_ADDING_DB_NAME is authoritative.
                 self._db = target_db
                 self.db_name = db_name
                 self._enabled = True
@@ -100,6 +129,24 @@ class UnifiedAddingDB:
                     "Unified Adding DB detected db=%s collection=%s (read-only source of truth)",
                     db_name,
                     self.collection_name,
+                )
+                return True
+
+            if candidates:
+                source_count, total_docs, db_name = max(
+                    candidates,
+                    key=lambda row: (row[0], row[1]),
+                )
+                self._db = base_db.client[db_name]
+                self.db_name = db_name
+                self._enabled = True
+                self._checked = True
+                log.info(
+                    "Unified Adding DB selected db=%s collection=%s known_sources=%s total_docs=%s (read-only source of truth)",
+                    db_name,
+                    self.collection_name,
+                    source_count,
+                    total_docs,
                 )
                 return True
 
