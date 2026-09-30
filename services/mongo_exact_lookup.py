@@ -274,6 +274,141 @@ class MongoExactLookup:
         return None
 
 
+    @staticmethod
+    def _file_id_query(file_ids: Iterable[str]) -> dict[str, Any]:
+        values = list(dict.fromkeys(
+            str(value or "").strip()
+            for value in file_ids
+            if str(value or "").strip()
+        ))
+        if not values:
+            return {"$expr": {"$eq": [1, 0]}}
+        return {
+            "$or": [
+                {"telegram_file_id": {"$in": values}},
+                {"file_id": {"$in": values}},
+                {"file_ids": {"$in": values}},
+                {"media.file_id": {"$in": values}},
+                {"file.id": {"$in": values}},
+            ]
+        }
+
+    @staticmethod
+    def _character_id_query(character_id: str | int | None) -> dict[str, Any]:
+        raw = str(character_id or "").strip()
+        if not raw:
+            return {"$expr": {"$eq": [1, 0]}}
+        values: list[Any] = [raw]
+        try:
+            values.append(int(raw))
+        except Exception:
+            pass
+        return {
+            "$or": [
+                {"character_id": {"$in": values}},
+                {"card_id": {"$in": values}},
+                {"char_id": {"$in": values}},
+                {"item_id": {"$in": values}},
+                {"id": {"$in": values}},
+            ]
+        }
+
+    async def catch_exact_compat(
+        self,
+        *,
+        uids: Iterable[str] = (),
+        file_ids: Iterable[str] = (),
+        character_id: str | int | None = None,
+    ) -> ItemSnapshot | None:
+        """Catch-only exact compatibility path.
+
+        It never broadens to unrelated sources. It checks the canonical unified
+        characters collection first, then legacy physical Catch collections.
+        Exact Telegram UID remains the first key, with file_id and Catch's numeric
+        character ID as migration/legacy recovery keys.
+        """
+        catch_collections = ["items_character_catcher", "items_character_catcher_fw"]
+
+        queries: list[tuple[str, dict[str, Any]]] = []
+        uid_values = [str(value or "").strip() for value in uids if str(value or "").strip()]
+        if uid_values:
+            queries.append(("uid", self._uid_query(uid_values)))
+        file_values = [str(value or "").strip() for value in file_ids if str(value or "").strip()]
+        if file_values:
+            queries.append(("file_id", self._file_id_query(file_values)))
+        if str(character_id or "").strip():
+            queries.append(("character_id", self._character_id_query(character_id)))
+
+        if not queries:
+            return None
+
+        def parse_doc(source: str, doc: dict[str, Any] | None) -> ItemSnapshot | None:
+            if not doc:
+                return None
+            resolved = unified_adding_db.source_key(doc, source) if unified_adding_db.enabled else source
+            return parse_item(
+                resolved,
+                COLLECTION_TO_OUTPUT_COMMAND.get(resolved, "/catch"),
+                doc,
+            )
+
+        if unified_adding_db.enabled:
+            for reason, query in queries:
+                try:
+                    scoped = unified_adding_db.scoped_query(query, catch_collections)
+                    async with self._sem:
+                        doc = await unified_adding_db.collection().find_one(
+                            scoped,
+                            projection=LOOKUP_PROJECTION,
+                            max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                        )
+                    item = parse_doc("items_character_catcher", doc)
+                    if item:
+                        log.info(
+                            "Catch compatibility match tier=canonical key=%s source=%s name=%s",
+                            reason,
+                            item.collection,
+                            item.name,
+                        )
+                        return item
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning(
+                        "Catch canonical compatibility lookup failed key=%s error=%s",
+                        reason,
+                        exc,
+                    )
+
+        for collection in catch_collections:
+            for reason, query in queries:
+                try:
+                    async with self._sem:
+                        doc = await get_db()[collection].find_one(
+                            query,
+                            projection=LOOKUP_PROJECTION,
+                            max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                        )
+                    item = parse_doc(collection, doc)
+                    if item:
+                        log.info(
+                            "Catch compatibility match tier=legacy key=%s collection=%s name=%s",
+                            reason,
+                            collection,
+                            item.name,
+                        )
+                        return item
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning(
+                        "Catch legacy compatibility lookup failed collection=%s key=%s error=%s",
+                        collection,
+                        reason,
+                        exc,
+                    )
+        return None
+
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not sha:
             return None
