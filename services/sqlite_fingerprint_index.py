@@ -348,6 +348,7 @@ class SQLiteFingerprintIndex:
                     self.last_sync_at = None
 
                 if unified_adding_db.enabled:
+                    batch: list[ItemSnapshot] = []
                     try:
                         cursor = unified_adding_db.collection().find(
                             unified_adding_db.scoped_query(
