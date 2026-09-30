@@ -44,6 +44,14 @@ class LookupBackend:
                 return item
         return await mongo_exact_lookup.exact_uids(uids, collections)
 
+    async def exact_file_ids(
+        self, file_ids: list[str] | tuple[str, ...], collections: list[str] | None = None
+    ) -> ItemSnapshot | None:
+        # file_id is a legacy compatibility key, not a global identity. Keep it
+        # source-scoped and use Mongo's existing source/global file-id indexes.
+        return await mongo_exact_lookup.exact_file_ids(file_ids, collections)
+
+
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             item = await sqlite_index.exact_uid(uid, collections)
