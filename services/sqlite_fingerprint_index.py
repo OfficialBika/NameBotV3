@@ -22,13 +22,13 @@ log = logging.getLogger(__name__)
 # SQLite is a derived lookup index. Keep only fields required to identify, verify,
 # and format a lookup result; never mirror the full MongoDB document into SQLite.
 SQLITE_ITEM_FIELDS = (
-    "mongo_id", "collection", "command", "name", "card_id", "rarity", "media_type",
+    "mongo_id", "collection", "command", "name", "media_type",
     "file_unique_id", "file_unique_ids", "sha256", "sha256_aliases",
     "phash", "pixel_sha256", "phash_large", "dhash", "whash", "colorhash",
     "crop_hash", "frame_hashes", "video_samples", "video_signature", "duration_ms",
     "origin_chat_id", "origin_message_id",
 )
-SQLITE_INDEX_SCHEMA_VERSION = "2"
+SQLITE_INDEX_SCHEMA_VERSION = "3"
 
 
 class SQLiteFingerprintIndex:
