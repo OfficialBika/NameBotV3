@@ -13,6 +13,16 @@ from services.unified_adding_db import unified_adding_db
 log = logging.getLogger(__name__)
 
 
+# Catch-only compatibility projection. Kept separate so legacy Catch identifiers
+# do not alter the projection used by other lookup sources.
+CATCH_COMPAT_PROJECTION = dict(LOOKUP_PROJECTION)
+CATCH_COMPAT_PROJECTION.update({
+    "file_id": 1,
+    "file_ids": 1,
+    "telegram_file_id": 1,
+})
+
+
 class MongoExactLookup:
     """Read-only exact lookup backend for SQLite mode.
 
@@ -359,7 +369,7 @@ class MongoExactLookup:
                     async with self._sem:
                         doc = await unified_adding_db.collection().find_one(
                             scoped,
-                            projection=LOOKUP_PROJECTION,
+                            projection=CATCH_COMPAT_PROJECTION,
                             max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
                         )
                     item = parse_doc("items_character_catcher", doc)
@@ -386,7 +396,7 @@ class MongoExactLookup:
                     async with self._sem:
                         doc = await get_db()[collection].find_one(
                             query,
-                            projection=LOOKUP_PROJECTION,
+                            projection=CATCH_COMPAT_PROJECTION,
                             max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
                         )
                     item = parse_doc(collection, doc)
