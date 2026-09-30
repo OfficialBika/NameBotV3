@@ -24,30 +24,40 @@ class MongoExactLookup:
         self._sem = asyncio.Semaphore(8)
 
     @staticmethod
-    def _uid_query(uid: str) -> dict[str, Any]:
-        """Match every UID layout used by Adding-Helperbot/legacy records.
+    def _uid_query(uids: str | Iterable[str]) -> dict[str, Any]:
+        """Match Telegram UIDs across the unified Adding DB's known layouts.
 
-        Telegram file_unique_id may be stored as a scalar, an alias list, or
-        nested under media/file containers. The lookup side is read-only and
-        deliberately accepts all known layouts without changing the source DB.
+        The working Adding&Helper lookup matches membership in the unified
+        file_unique_ids array. Keep the same semantics here and also accept
+        scalar and nested legacy layouts.
         """
-        value = str(uid or "").strip()
+        if isinstance(uids, str):
+            values = [uids.strip()] if uids.strip() else []
+        else:
+            values = []
+            for raw in uids:
+                value = str(raw or "").strip()
+                if value and value not in values:
+                    values.append(value)
+        if not values:
+            return {"$expr": {"$eq": [1, 0]}}
+
         return {
             "$or": [
-                {"file_unique_id": value},
-                {"file_unique_ids": value},
-                {"telegram_file_unique_id": value},
-                {"telegram_file_unique_ids": value},
-                {"photo_file_unique_id": value},
-                {"video_file_unique_id": value},
-                {"media.file_unique_id": value},
-                {"media.file_unique_ids": value},
-                {"media.telegram_file_unique_id": value},
-                {"media.telegram_file_unique_ids": value},
-                {"file.unique_id": value},
-                {"file.file_unique_id": value},
-                {"file_unique_ids.file_unique_id": value},
-                {"file_unique_ids.unique_id": value},
+                {"file_unique_ids": {"$in": values}},
+                {"file_unique_id": {"$in": values}},
+                {"telegram_file_unique_id": {"$in": values}},
+                {"telegram_file_unique_ids": {"$in": values}},
+                {"photo_file_unique_id": {"$in": values}},
+                {"video_file_unique_id": {"$in": values}},
+                {"media.file_unique_id": {"$in": values}},
+                {"media.file_unique_ids": {"$in": values}},
+                {"media.telegram_file_unique_id": {"$in": values}},
+                {"media.telegram_file_unique_ids": {"$in": values}},
+                {"file.unique_id": {"$in": values}},
+                {"file.file_unique_id": {"$in": values}},
+                {"file_unique_ids.file_unique_id": {"$in": values}},
+                {"file_unique_ids.unique_id": {"$in": values}},
             ]
         }
 
