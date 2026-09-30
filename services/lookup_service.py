@@ -90,12 +90,16 @@ class LookupService:
                         scope = manual_scope
 
                 collections = scope.collections
+                # An unknown source must never silently become an all-collections
+                # auto lookup. Manual lookup is allowed to use global recovery when
+                # no source can be resolved; auto lookup remains source-scoped.
+                lookup_collections = collections if collections is not None else ([] if not manual else None)
                 # Character Catcher spawn posts are scoped to its own collection first,
                 # then explicitly fall back to the complete item database if the
                 # Catch collection has no match. The leading emoji is intentionally
                 # ignored by the caption detector because Catch Bot changes it.
                 catch_spawn_global_fallback = is_character_catcher_spawn(source_message)
-                filter_tag = self._filter_tag(collections)
+                filter_tag = self._filter_tag(lookup_collections)
                 output_command = output_command_from_message(
                     source_message,
                     collections[0] if collections and len(collections) == 1 else None,
@@ -126,7 +130,7 @@ class LookupService:
                                 started,
                                 1.0,
                             )
-                        item = await lookup_backend.exact_uid(candidate_uid, collections)
+                        item = await lookup_backend.exact_uid(candidate_uid, lookup_collections)
                         if item:
                             hit = True
                             self.result_cache.set(cache_key, item)
@@ -216,7 +220,7 @@ class LookupService:
                         return self._done(self._with_command(cached, output_command, source_message), "sha_cache", started, 1.0)
 
                 # 2) byte exact SHA aliases.
-                item = await lookup_backend.exact_sha(media_hash.sha256 or "", collections)
+                item = await lookup_backend.exact_sha(media_hash.sha256 or "", lookup_collections)
                 reason = "sha"
                 if not item and ((manual and not collections) or catch_spawn_global_fallback):
                     item = await lookup_backend.exact_sha(media_hash.sha256 or "", None)
@@ -228,7 +232,7 @@ class LookupService:
 
                 # 3) decoded canonical pixel hash exact match for photos.
                 if media.media_type == "photo" and media_hash.pixel_sha256:
-                    item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, collections)
+                    item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, lookup_collections)
                     reason = "pixel_sha"
                     if not item and ((manual and not collections) or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, None)
@@ -240,7 +244,7 @@ class LookupService:
 
                 # 4) exact sampled video signature.
                 if media.media_type == "video" and media_hash.video_signature:
-                    item = await lookup_backend.exact_video_signature(media_hash.video_signature, collections)
+                    item = await lookup_backend.exact_video_signature(media_hash.video_signature, lookup_collections)
                     reason = "video_signature"
                     if not item and ((manual and not collections) or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_video_signature(media_hash.video_signature, None)
@@ -251,7 +255,7 @@ class LookupService:
                         return self._done(self._with_command(item, output_command, source_message), reason, started, 1.0)
 
                 # 5) source-scoped similarity.
-                item, confidence = await self._match_similarity(media_hash, media.media_type, collections, global_mode=False)
+                item, confidence = await self._match_similarity(media_hash, media.media_type, lookup_collections, global_mode=False)
                 reason = "photo_multihash" if media.media_type == "photo" else "video_multiframe"
                 if item:
                     hit = True
@@ -275,7 +279,7 @@ class LookupService:
                 # records, so UID/global-UID and hash matching always keep priority.
                 origin = source_origin_key(source_message)
                 if origin:
-                    item = await lookup_backend.exact_origin(origin, collections)
+                    item = await lookup_backend.exact_origin(origin, lookup_collections)
                     if not item and ((manual and not collections) or catch_spawn_global_fallback):
                         item = await lookup_backend.exact_origin(origin, None)
                     if item:
