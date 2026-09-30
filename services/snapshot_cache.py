@@ -232,7 +232,7 @@ NAME_FIELDS = ["name", "character_name", "char_name", "item_name", "card_name", 
 ANIME_FIELDS = ["anime_name", "anime", "series", "movie", "category", "media.series", "character.series"]
 ID_FIELDS = ["card_id", "id", "item_id", "char_id", "character_id", "media.id", "character.id"]
 RARITY_FIELDS = ["rarity", "rank", "tier", "class", "media.rarity", "character.rarity"]
-FILE_UID_FIELDS = ["file_unique_id", "photo_file_unique_id", "video_file_unique_id", "media.file_unique_id", "file.unique_id"]
+FILE_UID_FIELDS = ["file_unique_id", "telegram_file_unique_id", "photo_file_unique_id", "video_file_unique_id", "media.file_unique_id", "media.telegram_file_unique_id", "file.unique_id", "file.file_unique_id"]
 SHA_FIELDS = ["sha256", "media_sha256", "hash", "file_hash", "media.sha256", "file.sha256"]
 PHASH_FIELDS = ["phash", "photo_fingerprint.phash", "photo_phash", "image_phash", "media.phash", "file.phash"]
 FRAME_HASH_FIELDS = ["frame_hashes", "video_frame_hashes", "frames", "media.frame_hashes", "file.frame_hashes"]
@@ -270,6 +270,8 @@ LOOKUP_PROJECTION: dict[str, int] = {
     "type": 1,
     "file_unique_id": 1,
     "file_unique_ids": 1,
+    "telegram_file_unique_id": 1,
+    "telegram_file_unique_ids": 1,
     "photo_file_unique_id": 1,
     "video_file_unique_id": 1,
     "sha256": 1,
@@ -323,6 +325,7 @@ SQLITE_LOOKUP_PROJECTION: dict[str, int] = {
     "name_aliases": 1,
     "media_type": 1, "type": 1, "file_type": 1,
     "file_unique_id": 1, "file_unique_ids": 1,
+    "telegram_file_unique_id": 1, "telegram_file_unique_ids": 1,
     "photo_file_unique_id": 1, "video_file_unique_id": 1,
     "sha256": 1, "sha256_aliases": 1, "media_sha256": 1, "hash": 1, "file_hash": 1,
     "phash": 1, "phash_large": 1, "dhash": 1, "whash": 1, "colorhash": 1, "crop_hash": 1, "pixel_sha256": 1,
@@ -342,9 +345,11 @@ SQLITE_LOOKUP_PROJECTION: dict[str, int] = {
     "media_geometry.frame_count": 1, "media_geometry.width": 1, "media_geometry.height": 1,
     "origin_chat_id": 1, "origin_message_id": 1,
     "source_origin": 1, "updated_at": 1, "fingerprint_version": 1,
-    "media.name": 1, "media.file_unique_id": 1, "media.type": 1, "media.phash": 1,
+    "media.name": 1, "media.file_unique_id": 1, "media.file_unique_ids": 1,
+    "media.telegram_file_unique_id": 1, "media.telegram_file_unique_ids": 1,
+    "media.type": 1, "media.phash": 1,
     "media.sha256": 1, "media.frame_hashes": 1,
-    "file.unique_id": 1, "file.type": 1, "file.phash": 1, "file.hash": 1,
+    "file.unique_id": 1, "file.file_unique_id": 1, "file.type": 1, "file.phash": 1, "file.hash": 1,
     "file.sha256": 1, "file.frame_hashes": 1,
     "character.name": 1,
 }
