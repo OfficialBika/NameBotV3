@@ -16,6 +16,7 @@ from config import COLLECTION_TO_OUTPUT_COMMAND, settings
 from database.mongo import get_db
 from services.hash_service import VideoSampleHash
 from services.snapshot_cache import HashChunkIndex, ItemSnapshot, SQLITE_LOOKUP_PROJECTION, parse_item
+from services.unified_adding_db import unified_adding_db
 
 log = logging.getLogger(__name__)
 
@@ -271,7 +272,16 @@ class SQLiteFingerprintIndex:
             indexed = {str(row["collection"]): int(row["n"] or 0) for row in rows}
 
             async def mongo_count(collection: str) -> tuple[str, int]:
-                return collection, int(await get_db()[collection].count_documents(self._indexable_mongo_query()))
+                if unified_adding_db.enabled:
+                    query = unified_adding_db.scoped_query(
+                        self._indexable_mongo_query(),
+                        [collection],
+                    )
+                    value = await unified_adding_db.collection().count_documents(query)
+                    return collection, int(value)
+                return collection, int(
+                    await get_db()[collection].count_documents(self._indexable_mongo_query())
+                )
 
             counts = await asyncio.gather(
                 *(mongo_count(collection) for collection in COLLECTION_TO_OUTPUT_COMMAND)
@@ -294,6 +304,7 @@ class SQLiteFingerprintIndex:
 
     async def ensure_built(self) -> None:
         await self.open()
+        await unified_adding_db.detect()
         if not settings.sqlite_build_on_start:
             return
         existing = await self.count()
@@ -336,14 +347,22 @@ class SQLiteFingerprintIndex:
                         await self.db.commit()
                     self.last_sync_at = None
 
-                for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
-                    batch: list[ItemSnapshot] = []
+                if unified_adding_db.enabled:
                     try:
-                        cursor = get_db()[collection].find(
-                            {}, projection=SQLITE_LOOKUP_PROJECTION
+                        cursor = unified_adding_db.collection().find(
+                            unified_adding_db.scoped_query(
+                                {},
+                                list(COLLECTION_TO_OUTPUT_COMMAND.keys()),
+                            ),
+                            projection=SQLITE_LOOKUP_PROJECTION,
                         ).batch_size(max(1, settings.sqlite_batch_size))
                         async for doc in cursor:
-                            item = parse_item(collection, default_command, doc)
+                            source = unified_adding_db.source_key(doc)
+                            default_command = COLLECTION_TO_OUTPUT_COMMAND.get(
+                                source,
+                                settings.default_command,
+                            )
+                            item = parse_item(source, default_command, doc)
                             if not item:
                                 continue
                             batch.append(item)
@@ -357,8 +376,35 @@ class SQLiteFingerprintIndex:
                     except asyncio.CancelledError:
                         raise
                     except Exception:
-                        failed_collections.append(collection)
-                        log.exception("SQLite initial index load failed for %s", collection)
+                        failed_collections.append(unified_adding_db.collection_name)
+                        log.exception(
+                            "SQLite unified Adding DB initial index load failed for %s",
+                            unified_adding_db.collection_name,
+                        )
+                else:
+                    for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
+                        batch: list[ItemSnapshot] = []
+                        try:
+                            cursor = get_db()[collection].find(
+                                {}, projection=SQLITE_LOOKUP_PROJECTION
+                            ).batch_size(max(1, settings.sqlite_batch_size))
+                            async for doc in cursor:
+                                item = parse_item(collection, default_command, doc)
+                                if not item:
+                                    continue
+                                batch.append(item)
+                                if len(batch) >= max(1, settings.sqlite_batch_size):
+                                    await self.upsert_items(batch)
+                                    total += len(batch)
+                                    batch.clear()
+                            if batch:
+                                await self.upsert_items(batch)
+                                total += len(batch)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            failed_collections.append(collection)
+                            log.exception("SQLite initial index load failed for %s", collection)
 
                 async with self._write_lock:
                     if not failed_collections:
@@ -505,14 +551,29 @@ class SQLiteFingerprintIndex:
                     values.extend(ObjectId(value) for value in values if ObjectId.is_valid(value))
                 except Exception:
                     pass
-                cursor = get_db()[collection].find(
-                    {"_id": {"$in": values}},
-                    projection=LOOKUP_PROJECTION,
-                )
+                base_query = {"_id": {"$in": values}}
+                if unified_adding_db.enabled:
+                    cursor = unified_adding_db.collection().find(
+                        unified_adding_db.scoped_query(base_query, [collection]),
+                        projection=LOOKUP_PROJECTION,
+                    )
+                else:
+                    cursor = get_db()[collection].find(
+                        base_query,
+                        projection=LOOKUP_PROJECTION,
+                    )
                 items: list[ItemSnapshot] = []
-                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
                 async for doc in cursor:
-                    item = parse_item(collection, default_command, doc)
+                    source = (
+                        unified_adding_db.source_key(doc, collection)
+                        if unified_adding_db.enabled
+                        else collection
+                    )
+                    default_command = COLLECTION_TO_OUTPUT_COMMAND.get(
+                        source,
+                        settings.default_command,
+                    )
+                    item = parse_item(source, default_command, doc)
                     if item:
                         items.append(item)
                 if items:
@@ -569,15 +630,23 @@ class SQLiteFingerprintIndex:
         next_watermark = datetime.now(timezone.utc)
         changed_total = 0
         failed = False
-        for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
-            batch: list[ItemSnapshot] = []
+        if unified_adding_db.enabled:
             try:
-                cursor = get_db()[collection].find(
-                    {"updated_at": {"$gt": start, "$lte": next_watermark}},
+                cursor = unified_adding_db.collection().find(
+                    unified_adding_db.scoped_query(
+                        {"updated_at": {"$gt": start, "$lte": next_watermark}},
+                        list(COLLECTION_TO_OUTPUT_COMMAND.keys()),
+                    ),
                     projection=LOOKUP_PROJECTION,
                 ).batch_size(max(1, settings.sqlite_batch_size))
+                batch: list[ItemSnapshot] = []
                 async for doc in cursor:
-                    item = parse_item(collection, default_command, doc)
+                    source = unified_adding_db.source_key(doc)
+                    item = parse_item(
+                        source,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        doc,
+                    )
                     if not item:
                         continue
                     batch.append(item)
@@ -592,7 +661,32 @@ class SQLiteFingerprintIndex:
                 raise
             except Exception:
                 failed = True
-                log.exception("SQLite delta sync failed for %s", collection)
+                log.exception("SQLite unified Adding DB delta sync failed")
+        else:
+            for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
+                batch: list[ItemSnapshot] = []
+                try:
+                    cursor = get_db()[collection].find(
+                        {"updated_at": {"$gt": start, "$lte": next_watermark}},
+                        projection=LOOKUP_PROJECTION,
+                    ).batch_size(max(1, settings.sqlite_batch_size))
+                    async for doc in cursor:
+                        item = parse_item(collection, default_command, doc)
+                        if not item:
+                            continue
+                        batch.append(item)
+                        if len(batch) >= max(1, settings.sqlite_batch_size):
+                            await self.upsert_items(batch)
+                            changed_total += len(batch)
+                            batch.clear()
+                    if batch:
+                        await self.upsert_items(batch)
+                        changed_total += len(batch)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    failed = True
+                    log.exception("SQLite delta sync failed for %s", collection)
 
         assert self.db is not None
         async with self._write_lock:
