@@ -8,6 +8,7 @@ from typing import Any
 from config import COLLECTION_TO_OUTPUT_COMMAND, settings
 from database.mongo import get_db
 from services.snapshot_cache import ItemSnapshot, LOOKUP_PROJECTION, parse_item
+from services.unified_adding_db import unified_adding_db
 
 log = logging.getLogger(__name__)
 
@@ -30,12 +31,26 @@ class MongoExactLookup:
         default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
         try:
             async with self._sem:
-                doc = await get_db()[collection].find_one(
-                    query,
-                    projection=LOOKUP_PROJECTION,
-                    max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
-                )
-            return parse_item(collection, default_command, doc) if doc else None
+                if unified_adding_db.enabled:
+                    scoped_query = unified_adding_db.scoped_query(query, [collection])
+                    doc = await unified_adding_db.collection().find_one(
+                        scoped_query,
+                        projection=LOOKUP_PROJECTION,
+                        max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                    )
+                    resolved_source = unified_adding_db.source_key(doc, collection) if doc else collection
+                else:
+                    doc = await get_db()[collection].find_one(
+                        query,
+                        projection=LOOKUP_PROJECTION,
+                        max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                    )
+                    resolved_source = collection
+            return parse_item(
+                resolved_source,
+                COLLECTION_TO_OUTPUT_COMMAND.get(resolved_source, default_command),
+                doc,
+            ) if doc else None
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -46,6 +61,32 @@ class MongoExactLookup:
         selected = self._collections(collections)
         if not selected:
             return None
+
+        # Adding-Helperbot stores all records in one physical collection. Query
+        # source_key directly instead of opening one Mongo query per legacy
+        # logical collection.
+        if unified_adding_db.enabled:
+            try:
+                scoped_query = unified_adding_db.scoped_query(query, selected if collections else None)
+                async with self._sem:
+                    doc = await unified_adding_db.collection().find_one(
+                        scoped_query,
+                        projection=LOOKUP_PROJECTION,
+                        max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                    )
+                if not doc:
+                    return None
+                source = unified_adding_db.source_key(doc)
+                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(
+                    source,
+                    COLLECTION_TO_OUTPUT_COMMAND.get(selected[0], settings.default_command),
+                )
+                return parse_item(source or selected[0], default_command, doc)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("Mongo unified exact lookup failed sources=%s error=%s", selected, exc)
+                return None
 
         # Scoped lookups are almost always one collection, so avoid task overhead.
         if len(selected) == 1:
@@ -126,6 +167,27 @@ class MongoExactLookup:
             ]
         }
         out: list[ItemSnapshot] = []
+        if unified_adding_db.enabled:
+            try:
+                cursor = unified_adding_db.collection().find(
+                    unified_adding_db.scoped_query(query, selected if collections else None),
+                    projection=LOOKUP_PROJECTION,
+                ).limit(max_candidates)
+                async for doc in cursor:
+                    source = unified_adding_db.source_key(doc)
+                    item = parse_item(
+                        source,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        doc,
+                    )
+                    if item:
+                        out.append(item)
+                        if len(out) >= max_candidates:
+                            return out
+            except Exception as exc:
+                log.warning("Mongo unified photo candidate fallback failed sources=%s error=%s", selected, exc)
+            return out
+
         per_collection = max(1, max_candidates // max(1, len(selected)))
         for collection in selected:
             try:
@@ -173,6 +235,27 @@ class MongoExactLookup:
                 ]
             }
         out: list[ItemSnapshot] = []
+        if unified_adding_db.enabled:
+            try:
+                cursor = unified_adding_db.collection().find(
+                    unified_adding_db.scoped_query(query, selected if collections else None),
+                    projection=LOOKUP_PROJECTION,
+                ).limit(max_candidates)
+                async for doc in cursor:
+                    source = unified_adding_db.source_key(doc)
+                    item = parse_item(
+                        source,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        doc,
+                    )
+                    if item:
+                        out.append(item)
+                        if len(out) >= max_candidates:
+                            return out
+            except Exception as exc:
+                log.warning("Mongo unified video candidate fallback failed sources=%s error=%s", selected, exc)
+            return out
+
         per_collection = max(1, max_candidates // max(1, len(selected)))
         for collection in selected:
             try:
@@ -209,12 +292,25 @@ class MongoExactLookup:
             except Exception:
                 pass
             try:
-                cursor = get_db()[collection].find(
-                    {"_id": {"$in": values}}, projection=LOOKUP_PROJECTION
-                ).batch_size(max(1, settings.sqlite_batch_size))
-                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
+                base = {"_id": {"$in": values}}
+                if unified_adding_db.enabled:
+                    query = unified_adding_db.scoped_query(base, [collection])
+                    cursor = unified_adding_db.collection().find(
+                        query,
+                        projection=LOOKUP_PROJECTION,
+                    ).batch_size(max(1, settings.sqlite_batch_size))
+                else:
+                    cursor = get_db()[collection].find(
+                        base,
+                        projection=LOOKUP_PROJECTION,
+                    ).batch_size(max(1, settings.sqlite_batch_size))
                 async for doc in cursor:
-                    item = parse_item(collection, default_command, doc)
+                    source = unified_adding_db.source_key(doc, collection) if unified_adding_db.enabled else collection
+                    item = parse_item(
+                        source,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        doc,
+                    )
                     if item:
                         out.append(item)
             except Exception as exc:
