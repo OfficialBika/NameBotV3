@@ -146,7 +146,16 @@ class MongoExactLookup:
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not uid:
             return None
-        return await self._find_first(self._uid_query(uid), collections)
+        return await self.exact_uids([uid], collections)
+
+    async def exact_uids(
+        self, uids: list[str] | tuple[str, ...], collections: list[str] | None = None
+    ) -> ItemSnapshot | None:
+        values = [str(uid or "").strip() for uid in uids if str(uid or "").strip()]
+        values = list(dict.fromkeys(values))
+        if not values:
+            return None
+        return await self._find_first(self._uid_query(values), collections)
 
     async def global_exact_uid(
         self,
