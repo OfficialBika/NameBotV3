@@ -490,9 +490,14 @@ class MongoExactLookup:
                 bound_name = str(unified_adding_db.db_name or "").strip()
                 current_name = str(current_db.name or "").strip()
                 excluded = {x for x in (bound_name, current_name) if x}
+                reserved = {"admin", "config", "local"}
                 self._catch_external_db_names = [
                     str(name) for name in names
-                    if str(name) and str(name) not in excluded
+                    if (
+                        str(name)
+                        and str(name) not in excluded
+                        and str(name).lower() not in reserved
+                    )
                 ]
                 log.info(
                     "Catch compatibility cross-db scan databases=%s excluded=%s",
@@ -524,6 +529,20 @@ class MongoExactLookup:
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
+                        error_text = str(exc)
+                        if "Unauthorized" in error_text or "not authorized" in error_text.lower():
+                            # Do not retry an inaccessible database on every UID/key.
+                            log.info(
+                                "Catch cross-db skip inaccessible db=%s key=%s",
+                                db_name,
+                                reason,
+                            )
+                            self._catch_external_db_names = [
+                                value
+                                for value in (self._catch_external_db_names or [])
+                                if value != db_name
+                            ]
+                            break
                         log.warning(
                             "Catch cross-db canonical lookup failed db=%s key=%s error=%s",
                             db_name,
