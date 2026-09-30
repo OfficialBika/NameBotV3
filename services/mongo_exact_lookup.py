@@ -32,6 +32,9 @@ class MongoExactLookup:
 
     def __init__(self) -> None:
         self._sem = asyncio.Semaphore(8)
+        # Catch-only DB recovery cache. It is populated only after a Catch
+        # source/global exact miss, so other lookup sources never pay this cost.
+        self._catch_external_db_names: list[str] | None = None
 
     @staticmethod
     def _uid_query(uids: str | Iterable[str]) -> dict[str, Any]:
@@ -362,6 +365,7 @@ class MongoExactLookup:
                 doc,
             )
 
+        # 1) Current canonical unified DB.
         if unified_adding_db.enabled:
             for reason, query in queries:
                 try:
@@ -390,11 +394,13 @@ class MongoExactLookup:
                         exc,
                     )
 
+        # 2) Catch-only physical legacy collections in the currently configured DB.
+        current_db = get_db()
         for collection in catch_collections:
             for reason, query in queries:
                 try:
                     async with self._sem:
-                        doc = await get_db()[collection].find_one(
+                        doc = await current_db[collection].find_one(
                             query,
                             projection=CATCH_COMPAT_PROJECTION,
                             max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
@@ -412,11 +418,69 @@ class MongoExactLookup:
                     raise
                 except Exception as exc:
                     log.warning(
-                        "Catch legacy compatibility lookup failed collection=%s key=%s error=%s",
+                        "Catch legacy compatibility lookup failed db=%s collection=%s key=%s error=%s",
+                        current_db.name,
                         collection,
                         reason,
                         exc,
                     )
+
+        # 3) Catch-only cross-database recovery.
+        # NameBot can be bound to a DB that contains other unified sources while
+        # the canonical Catch dataset lives in another DB. Search only canonical
+        # characters documents whose source_key is a Catch source.
+        try:
+            client = current_db.client
+            if self._catch_external_db_names is None:
+                names = await client.list_database_names()
+                bound_name = str(unified_adding_db.db_name or "").strip()
+                current_name = str(current_db.name or "").strip()
+                excluded = {x for x in (bound_name, current_name) if x}
+                self._catch_external_db_names = [
+                    str(name) for name in names
+                    if str(name) and str(name) not in excluded
+                ]
+                log.info(
+                    "Catch compatibility cross-db scan databases=%s excluded=%s",
+                    self._catch_external_db_names,
+                    sorted(excluded),
+                )
+
+            for db_name in self._catch_external_db_names:
+                target_db = client[db_name]
+                for reason, query in queries:
+                    try:
+                        scoped = unified_adding_db.scoped_query(query, catch_collections)
+                        async with self._sem:
+                            doc = await target_db["characters"].find_one(
+                                scoped,
+                                projection=CATCH_COMPAT_PROJECTION,
+                                max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                            )
+                        item = parse_doc("items_character_catcher", doc)
+                        if item:
+                            log.info(
+                                "Catch compatibility match tier=cross_db key=%s db=%s source=%s name=%s",
+                                reason,
+                                db_name,
+                                item.collection,
+                                item.name,
+                            )
+                            return item
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        log.warning(
+                            "Catch cross-db canonical lookup failed db=%s key=%s error=%s",
+                            db_name,
+                            reason,
+                            exc,
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Catch cross-db discovery failed error=%s", exc)
+
         return None
 
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
