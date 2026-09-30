@@ -21,6 +21,7 @@ from handlers import admin, auto_lookup, free, manual_lookup, start, status
 from services.lookup_backend import lookup_backend
 from services.snapshot_cache import snapshot
 from services.sqlite_fingerprint_index import sqlite_index
+from services.unified_adding_db import unified_adding_db
 from services.adding_data_sync import adding_data_sync
 
 try:
@@ -73,6 +74,7 @@ def build_dispatcher() -> Dispatcher:
 async def bootstrap_core(bot: Bot, *, webhook: bool) -> list[asyncio.Task]:
     """Initialize the selected lookup backend after HTTP bind in webhook mode."""
     await init_mongo()
+    await unified_adding_db.detect()
     await ensure_indexes()
     tasks: list[asyncio.Task] = []
 
