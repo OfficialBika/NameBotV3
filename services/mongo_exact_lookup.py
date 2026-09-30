@@ -37,8 +37,7 @@ class MongoExactLookup:
         self._catch_external_db_names: list[str] | None = None
 
     @staticmethod
-    def _uid_query(uids: str | Iterable[str]) -> dict[str, Any]:
-        """Match the canonical Adding schema first, then known legacy layouts."""
+    def _normalize_uids(uids: str | Iterable[str]) -> list[str]:
         if isinstance(uids, str):
             values = [uids.strip()] if uids.strip() else []
         else:
@@ -47,13 +46,46 @@ class MongoExactLookup:
                 value = str(raw or "").strip()
                 if value and value not in values:
                     values.append(value)
+        return values
+
+    @staticmethod
+    def _uid_query_new(uids: str | Iterable[str]) -> dict[str, Any]:
+        """Canonical Adding UID query; kept isolated so Mongo can use its UID index."""
+        values = MongoExactLookup._normalize_uids(uids)
         if not values:
             return {"$expr": {"$eq": [1, 0]}}
+        return {"file_unique_ids": {"$in": values}}
 
-        # Canonical Adding-Helperbot fields are flat and indexed:
-        #   file_unique_ids[]           -> idx_*_file_uid
-        #   telegram_file_unique_id     -> idx_*_telegram_file_uid
-        # Keep the legacy branches below so older imported records remain searchable.
+    @staticmethod
+    def _uid_query_legacy(uids: str | Iterable[str]) -> dict[str, Any]:
+        """Legacy UID query used only after the canonical indexed lookup misses."""
+        values = MongoExactLookup._normalize_uids(uids)
+        if not values:
+            return {"$expr": {"$eq": [1, 0]}}
+        return {
+            "$or": [
+                {"telegram_file_unique_id": {"$in": values}},
+                {"telegram_file_unique_ids": {"$in": values}},
+                {"file_unique_id": {"$in": values}},
+                {"photo_file_unique_id": {"$in": values}},
+                {"video_file_unique_id": {"$in": values}},
+                {"media.file_unique_id": {"$in": values}},
+                {"media.file_unique_ids": {"$in": values}},
+                {"media.telegram_file_unique_id": {"$in": values}},
+                {"media.telegram_file_unique_ids": {"$in": values}},
+                {"file.unique_id": {"$in": values}},
+                {"file.file_unique_id": {"$in": values}},
+                {"file_unique_ids.file_unique_id": {"$in": values}},
+                {"file_unique_ids.unique_id": {"$in": values}},
+            ]
+        }
+
+    @staticmethod
+    def _uid_query(uids: str | Iterable[str]) -> dict[str, Any]:
+        """Backward-compatible combined UID query for callers outside the fast path."""
+        values = MongoExactLookup._normalize_uids(uids)
+        if not values:
+            return {"$expr": {"$eq": [1, 0]}}
         return {
             "$or": [
                 {"file_unique_ids": {"$in": values}},
@@ -161,11 +193,16 @@ class MongoExactLookup:
     async def exact_uids(
         self, uids: Iterable[str], collections: list[str] | None = None
     ) -> ItemSnapshot | None:
-        values = [str(uid or "").strip() for uid in uids if str(uid or "").strip()]
-        values = list(dict.fromkeys(values))
+        values = self._normalize_uids(uids)
         if not values:
             return None
-        return await self._find_first(self._uid_query(values), collections)
+
+        # Match Adding-Helperbot's exact lookup order:
+        # canonical indexed UID first, then legacy UID layouts.
+        item = await self._find_first(self._uid_query_new(values), collections)
+        if item:
+            return item
+        return await self._find_first(self._uid_query_legacy(values), collections)
 
     async def global_exact_uid(
         self,
@@ -191,39 +228,54 @@ class MongoExactLookup:
         limit: int = 20,
     ) -> ItemSnapshot | None:
         """Global exact UID lookup against the canonical unified characters collection."""
-        values = [str(uid or "").strip() for uid in uids if str(uid or "").strip()]
-        values = list(dict.fromkeys(values))
+        values = self._normalize_uids(uids)
         if not values:
             return None
 
         if unified_adding_db.enabled:
             try:
-                # Canonical indexed query. No source_key restriction is applied here:
-                # this is the deliberate global fallback after source-scope miss.
-                cursor = unified_adding_db.collection().find(
-                    self._uid_query(values),
-                    projection=LOOKUP_PROJECTION,
-                ).limit(max(2, limit))
-                items: list[ItemSnapshot] = []
-                raw_matches = 0
-                parsed_matches = 0
-                unknown_sources: list[str] = []
+                # Mirror Adding-Helperbot: canonical indexed UID query first.
+                # Only if that misses do we query legacy UID fields.
+                docs: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                projection = LOOKUP_PROJECTION
+                max_items = max(2, limit)
 
-                async for doc in cursor:
-                    raw_matches += 1
+                async def collect(query: dict[str, Any]) -> None:
+                    cursor = unified_adding_db.collection().find(
+                        query,
+                        projection=projection,
+                    ).limit(max_items)
+                    async for doc in cursor:
+                        doc_id = str(doc.get("_id"))
+                        if doc_id in seen_ids:
+                            continue
+                        seen_ids.add(doc_id)
+                        docs.append(doc)
+                        if len(docs) >= max_items:
+                            break
+
+                await collect(self._uid_query_new(values))
+                if not docs:
+                    await collect(self._uid_query_legacy(values))
+
+                items: list[ItemSnapshot] = []
+                unknown_sources: list[str] = []
+                for doc in docs:
                     source = unified_adding_db.source_key(doc)
-                    if source not in COLLECTION_TO_OUTPUT_COMMAND:
-                        if source not in unknown_sources:
-                            unknown_sources.append(source or "<empty>")
-                        continue
                     item = parse_item(
-                        source,
-                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        source or preferred_collection or settings.default_command,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(
+                            source,
+                            settings.default_command,
+                        ),
                         doc,
                     )
-                    if item:
-                        parsed_matches += 1
-                        items.append(item)
+                    if not item:
+                        continue
+                    if source not in COLLECTION_TO_OUTPUT_COMMAND and source not in unknown_sources:
+                        unknown_sources.append(source or "<empty>")
+                    items.append(item)
 
                 if not items:
                     log.warning(
@@ -232,8 +284,8 @@ class MongoExactLookup:
                         unified_adding_db.db_name,
                         unified_adding_db.collection_name,
                         values,
-                        raw_matches,
-                        parsed_matches,
+                        len(docs),
+                        0,
                         unknown_sources,
                     )
                     return None
@@ -343,9 +395,11 @@ class MongoExactLookup:
         catch_collections = ["items_character_catcher", "items_character_catcher_fw"]
 
         queries: list[tuple[str, dict[str, Any]]] = []
-        uid_values = [str(value or "").strip() for value in uids if str(value or "").strip()]
+        uid_values = self._normalize_uids(uids)
         if uid_values:
-            queries.append(("uid", self._uid_query(uid_values)))
+            # Keep canonical UID first, then legacy UID fields, matching Adding.
+            queries.append(("uid", self._uid_query_new(uid_values)))
+            queries.append(("uid_legacy", self._uid_query_legacy(uid_values)))
         file_values = [str(value or "").strip() for value in file_ids if str(value or "").strip()]
         if file_values:
             queries.append(("file_id", self._file_id_query(file_values)))
