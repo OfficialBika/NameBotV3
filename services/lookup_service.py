@@ -15,7 +15,6 @@ from services.lookup_backend import lookup_backend
 from services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
 from services.source_resolver import (
-    is_character_catcher_spawn,
     output_command_from_message,
     resolve_lookup_scope,
     source_origin_key,
@@ -90,16 +89,11 @@ class LookupService:
                         scope = manual_scope
 
                 collections = scope.collections
-                # An unknown source must never silently become an all-collections
-                # auto lookup. Manual lookup is allowed to use global recovery when
-                # no source can be resolved; auto lookup remains source-scoped.
-                lookup_collections = collections if collections is not None else ([] if not manual else None)
-                # Character Catcher spawn posts are scoped to its own collection first,
-                # then explicitly fall back to the complete item database if the
-                # Catch collection has no match. The leading emoji is intentionally
-                # ignored by the caption detector because Catch Bot changes it.
-                catch_spawn_global_fallback = is_character_catcher_spawn(source_message)
-                filter_tag = self._filter_tag(lookup_collections)
+                # One canonical fallback pipeline is shared by Auto and Manual:
+                # source UID -> global UID -> source hash/similarity -> global hash/similarity.
+                # An unknown source therefore proceeds directly to the global stages.
+                lookup_collections = collections if collections is not None else None
+                filter_tag = self._filter_tag(collections)
                 output_command = output_command_from_message(
                     source_message,
                     collections[0] if collections and len(collections) == 1 else None,
