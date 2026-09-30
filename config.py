@@ -277,9 +277,11 @@ class Settings:
     # Physical MongoDB database used by Adding-Helperbot's canonical `characters`
     # collection. Prefer the explicit unified name; keep ADDING_DB_NAME as a
     # compatibility alias. When both are omitted, DB_NAME is the same-db default.
-    unified_adding_db_name: str = os.getenv(
-        "UNIFIED_ADDING_DB_NAME",
-        os.getenv("ADDING_DB_NAME", os.getenv("DB_NAME", "")),
+    unified_adding_db_name: str = (
+        os.getenv("UNIFIED_ADDING_DB_NAME")
+        or os.getenv("ADDING_DB_NAME")
+        or os.getenv("DB_NAME")
+        or ""
     ).strip()
 
     # Lookup backend selector. snapshot keeps the existing full-RAM engine; sqlite uses
