@@ -48,8 +48,8 @@ def _telegram_file_ids(message: Message, media) -> list[str]:
 
 
 CATCH_CHARACTER_ID_RE = re.compile(
-    r"(?:^|[\\n\\r])\\s*(\\d+)\\s*:\\s*.+?(?=$|[\\n\\r])"
-    r"|(?:character\\s*)?(?:id|item\\s*id|card\\s*id)\\s*[:#\\-]?\\s*(\\d+)",
+    r"(?:^|[\n\r])\s*(\d+)\s*:\s*.+?(?=$|[\n\r])"
+    r"|(?:character\s*)?(?:id|item\s*id|card\s*id)\s*[:#\-]?\s*(\d+)",
     re.I | re.M,
 )
 
@@ -67,7 +67,7 @@ def _catch_character_id(message: Message) -> str | None:
             value = getattr(obj, attr, None)
             if isinstance(value, str) and value.strip():
                 parts.append(value)
-    text = "\\n".join(parts)
+    text = "\n".join(parts)
     match = CATCH_CHARACTER_ID_RE.search(text)
     if not match:
         return None
