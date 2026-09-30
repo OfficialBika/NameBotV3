@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable
 from config import COLLECTION_TO_OUTPUT_COMMAND, settings
 from database.mongo import get_db
 from services.hash_service import VideoSampleHash
+from services.unified_adding_db import unified_adding_db
 from utils.text import normalize_name
 
 log = logging.getLogger(__name__)
@@ -485,24 +486,59 @@ class SnapshotCache:
     async def refresh(self) -> None:
         db = get_db()
         refresh_started_at = datetime.now(timezone.utc)
-        new_items: dict[str, dict[str, ItemSnapshot]] = {}
+        new_items: dict[str, dict[str, ItemSnapshot]] = {
+            collection: {} for collection in COLLECTION_TO_OUTPUT_COMMAND
+        }
         total = 0
         failed_collections: list[str] = []
-        for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
-            collection_items: dict[str, ItemSnapshot] = {}
+        if unified_adding_db.enabled:
             try:
-                cursor = db[collection].find({}, projection=LOOKUP_PROJECTION).batch_size(max(1, settings.snapshot_batch_size))
+                cursor = unified_adding_db.collection().find(
+                    unified_adding_db.scoped_query(
+                        {},
+                        list(COLLECTION_TO_OUTPUT_COMMAND.keys()),
+                    ),
+                    projection=LOOKUP_PROJECTION,
+                ).batch_size(max(1, settings.snapshot_batch_size))
                 async for doc in cursor:
-                    item = parse_item(collection, default_command, doc)
+                    source = unified_adding_db.source_key(doc)
+                    if source not in COLLECTION_TO_OUTPUT_COMMAND:
+                        continue
+                    item = parse_item(
+                        source,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        doc,
+                    )
                     if item:
-                        collection_items[item.mongo_id] = item
+                        new_items[source][item.mongo_id] = item
             except Exception:
-                failed_collections.append(collection)
-                log.exception("snapshot load failed for %s", collection)
-                # Never erase a previously healthy collection because of a transient Mongo timeout.
-                collection_items = dict(self.items_by_collection.get(collection, {}))
-            new_items[collection] = collection_items
-            total += len(collection_items)
+                failed_collections.append(unified_adding_db.collection_name)
+                log.exception(
+                    "snapshot load failed for unified Adding DB collection=%s",
+                    unified_adding_db.collection_name,
+                )
+                # Never erase a previously healthy snapshot because of a transient
+                # Mongo timeout against the shared unified source.
+                new_items = {
+                    collection: dict(self.items_by_collection.get(collection, {}))
+                    for collection in COLLECTION_TO_OUTPUT_COMMAND
+                }
+        else:
+            for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
+                collection_items: dict[str, ItemSnapshot] = {}
+                try:
+                    cursor = db[collection].find({}, projection=LOOKUP_PROJECTION).batch_size(max(1, settings.snapshot_batch_size))
+                    async for doc in cursor:
+                        item = parse_item(collection, default_command, doc)
+                        if item:
+                            collection_items[item.mongo_id] = item
+                except Exception:
+                    failed_collections.append(collection)
+                    log.exception("snapshot load failed for %s", collection)
+                    # Never erase a previously healthy collection because of a transient Mongo timeout.
+                    collection_items = dict(self.items_by_collection.get(collection, {}))
+                new_items[collection] = collection_items
+        total = sum(len(items) for items in new_items.values())
 
         async with self._lock:
             self.items_by_collection = new_items
@@ -534,12 +570,30 @@ class SnapshotCache:
                     values.extend(ObjectId(value) for value in values if ObjectId.is_valid(value))
                 except Exception:
                     pass
-                cursor = db[collection].find({"_id": {"$in": values}}, projection=LOOKUP_PROJECTION)
-                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
+                base_query = {"_id": {"$in": values}}
+                if unified_adding_db.enabled:
+                    cursor = db[unified_adding_db.collection_name].find(
+                        unified_adding_db.scoped_query(base_query, [collection]),
+                        projection=LOOKUP_PROJECTION,
+                    )
+                else:
+                    cursor = db[collection].find(
+                        base_query,
+                        projection=LOOKUP_PROJECTION,
+                    )
                 async for doc in cursor:
-                    item = parse_item(collection, default_command, doc)
+                    source = (
+                        unified_adding_db.source_key(doc, collection)
+                        if unified_adding_db.enabled
+                        else collection
+                    )
+                    default_command = COLLECTION_TO_OUTPUT_COMMAND.get(
+                        source,
+                        settings.default_command,
+                    )
+                    item = parse_item(source, default_command, doc)
                     if item:
-                        self.items_by_collection.setdefault(collection, {})[item.mongo_id] = item
+                        self.items_by_collection.setdefault(source, {})[item.mongo_id] = item
                         changed += 1
             if changed:
                 self._rebuild_indexes()
@@ -572,19 +626,43 @@ class SnapshotCache:
         next_watermark = datetime.now(timezone.utc)
         changed: list[ItemSnapshot] = []
         failed = False
-        for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
+        if unified_adding_db.enabled:
             try:
-                cursor = db[collection].find(
-                    {"updated_at": {"$gt": start_watermark, "$lte": next_watermark}},
+                cursor = db[unified_adding_db.collection_name].find(
+                    unified_adding_db.scoped_query(
+                        {"updated_at": {"$gt": start_watermark, "$lte": next_watermark}},
+                        list(COLLECTION_TO_OUTPUT_COMMAND.keys()),
+                    ),
                     projection=LOOKUP_PROJECTION,
                 ).batch_size(max(1, settings.snapshot_batch_size))
                 async for doc in cursor:
-                    item = parse_item(collection, default_command, doc)
+                    source = unified_adding_db.source_key(doc)
+                    if source not in COLLECTION_TO_OUTPUT_COMMAND:
+                        continue
+                    item = parse_item(
+                        source,
+                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                        doc,
+                    )
                     if item:
                         changed.append(item)
             except Exception:
                 failed = True
-                log.exception("incremental snapshot sync failed for %s", collection)
+                log.exception("incremental snapshot sync failed for unified Adding DB")
+        else:
+            for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
+                try:
+                    cursor = db[collection].find(
+                        {"updated_at": {"$gt": start_watermark, "$lte": next_watermark}},
+                        projection=LOOKUP_PROJECTION,
+                    ).batch_size(max(1, settings.snapshot_batch_size))
+                    async for doc in cursor:
+                        item = parse_item(collection, default_command, doc)
+                        if item:
+                            changed.append(item)
+                except Exception:
+                    failed = True
+                    log.exception("incremental snapshot sync failed for %s", collection)
         if not changed:
             if not failed:
                 self.last_incremental_sync_at = next_watermark
