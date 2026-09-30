@@ -116,86 +116,89 @@ class LookupService:
                     file_uids,
                 )
 
-                # 1) UID exact match, including every Telegram photo-size UID
-                # and V3 file_unique_ids aliases. Source scope always wins.
+                # 1) Source-scoped Telegram UID first. We intentionally skip this
+                # stage when the source is unknown; the next stage is the explicit
+                # global UID lookup.
                 if file_uids:
+                    if collections:
+                        for candidate_uid in file_uids:
+                            cache_key = f"uid:{filter_tag}:{candidate_uid}"
+                            cached = self.result_cache.get(cache_key)
+                            if cached:
+                                hit = True
+                                return self._done(
+                                    self._with_command(cached, output_command, source_message),
+                                    "uid_cache",
+                                    started,
+                                    1.0,
+                                )
+                            item = await lookup_backend.exact_uid(candidate_uid, collections)
+                            if item:
+                                hit = True
+                                self.result_cache.set(cache_key, item)
+                                log.info(
+                                    "UID DEBUG source_match message=%s source=%s name=%s uid=%s",
+                                    getattr(message, "message_id", None),
+                                    item.collection,
+                                    item.name,
+                                    candidate_uid,
+                                )
+                                return self._done(
+                                    self._with_command(item, output_command, source_message),
+                                    "uid",
+                                    started,
+                                    1.0,
+                                )
+
+                    # 2) Global exact Telegram UID. This stage is mandatory for
+                    # BOTH Auto and Manual lookup after source-scoped UID misses.
+                    # It is authoritative to MongoDB in the unified Adding DB path.
                     for candidate_uid in file_uids:
-                        cache_key = f"uid:{filter_tag}:{candidate_uid}"
-                        cached = self.result_cache.get(cache_key)
+                        global_cache_key = f"uid:all:{candidate_uid}"
+                        cached = self.result_cache.get(global_cache_key)
                         if cached:
                             hit = True
+                            log.info(
+                                "UID DEBUG global_cache_match message=%s source=%s name=%s uid=%s",
+                                getattr(message, "message_id", None),
+                                cached.collection,
+                                cached.name,
+                                candidate_uid,
+                            )
                             return self._done(
                                 self._with_command(cached, output_command, source_message),
-                                "uid_cache",
+                                "uid_global_cache",
                                 started,
                                 1.0,
                             )
-                        item = await lookup_backend.exact_uid(candidate_uid, lookup_collections)
+
+                        item = await lookup_backend.global_exact_uid(
+                            candidate_uid,
+                            preferred_collection="items_character_catcher",
+                        )
                         if item:
                             hit = True
-                            self.result_cache.set(cache_key, item)
+                            self.result_cache.set(global_cache_key, item)
                             log.info(
-                                "UID DEBUG source_match message=%s source=%s name=%s uid=%s",
+                                "UID DEBUG global_exact_recovery message=%s source=%s name=%s uid=%s",
                                 getattr(message, "message_id", None),
                                 item.collection,
                                 item.name,
                                 candidate_uid,
                             )
                             return self._done(
-                                self._with_command(item, output_command, source_message),
-                                "uid",
+                                self._with_command(
+                                    item,
+                                    output_command_from_message(source_message, item.collection),
+                                    source_message,
+                                ),
+                                "uid_global",
                                 started,
                                 1.0,
                             )
 
-                    # Global UID recovery is intentionally restricted:
-                    # - manual lookup may recover globally;
-                    # - Catch spawn is a controlled exception;
-                    # - auto lookup with a known source stays source-scoped.
-                    allow_global_exact = bool((manual and not collections) or catch_spawn_global_fallback)
-                    if allow_global_exact:
-                        # Catch source gets priority for the legacy spawn path.
-                        for candidate_uid in file_uids:
-                            item = await lookup_backend.exact_uid(
-                                candidate_uid,
-                                ["items_character_catcher"],
-                            )
-                            if item:
-                                hit = True
-                                log.info(
-                                    "UID DEBUG global_exact_priority message=%s preferred_source=%s uid=%s name=%s",
-                                    getattr(message, "message_id", None),
-                                    item.collection,
-                                    candidate_uid,
-                                    item.name,
-                                )
-                                return self._done(
-                                    self._with_command(item, output_command, source_message),
-                                    "uid_global",
-                                    started,
-                                    1.0,
-                                )
-
-                        for candidate_uid in file_uids:
-                            item = await lookup_backend.exact_uid(candidate_uid, None)
-                            if item:
-                                hit = True
-                                log.info(
-                                    "UID DEBUG global_exact_recovery message=%s source=%s uid=%s name=%s",
-                                    getattr(message, "message_id", None),
-                                    item.collection,
-                                    candidate_uid,
-                                    item.name,
-                                )
-                                return self._done(
-                                    self._with_command(item, output_command, source_message),
-                                    "uid_global",
-                                    started,
-                                    1.0,
-                                )
-
                     log.warning(
-                        "UID DEBUG database_uid_miss message=%s requested_sources=%s",
+                        "UID DEBUG source_and_global_miss message=%s requested_sources=%s",
                         getattr(message, "message_id", None),
                         collections,
                     )
@@ -219,68 +222,134 @@ class LookupService:
                         hit = True
                         return self._done(self._with_command(cached, output_command, source_message), "sha_cache", started, 1.0)
 
-                # 2) byte exact SHA aliases.
-                item = await lookup_backend.exact_sha(media_hash.sha256 or "", lookup_collections)
+                # 3) Hash fallback: source-scoped exact hash first, then global
+                # exact hash. This stage runs for BOTH Auto and Manual lookup.
+                item = None
                 reason = "sha"
-                if not item and ((manual and not collections) or catch_spawn_global_fallback):
-                    item = await lookup_backend.exact_sha(media_hash.sha256 or "", None)
-                    reason = "sha_global"
-                if item:
-                    hit = True
-                    self._cache_exact(item, file_uid, sha_cache_key)
-                    return self._done(self._with_command(item, output_command, source_message), reason, started, 1.0)
+                if media_hash.sha256:
+                    if collections:
+                        item = await lookup_backend.exact_sha(media_hash.sha256, collections)
+                    if not item:
+                        item = await lookup_backend.exact_sha(media_hash.sha256, None)
+                        reason = "sha_global"
+                    if item:
+                        hit = True
+                        self._cache_exact(item, file_uid, sha_cache_key)
+                        return self._done(
+                            self._with_command(
+                                item,
+                                output_command_from_message(source_message, item.collection),
+                                source_message,
+                            ),
+                            reason,
+                            started,
+                            1.0,
+                        )
 
-                # 3) decoded canonical pixel hash exact match for photos.
+                # 4) Decoded canonical pixel hash exact match for photos.
                 if media.media_type == "photo" and media_hash.pixel_sha256:
-                    item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, lookup_collections)
+                    item = None
                     reason = "pixel_sha"
-                    if not item and ((manual and not collections) or catch_spawn_global_fallback):
-                        item = await lookup_backend.exact_pixel_sha(media_hash.pixel_sha256, None)
+                    if collections:
+                        item = await lookup_backend.exact_pixel_sha(
+                            media_hash.pixel_sha256,
+                            collections,
+                        )
+                    if not item:
+                        item = await lookup_backend.exact_pixel_sha(
+                            media_hash.pixel_sha256,
+                            None,
+                        )
                         reason = "pixel_sha_global"
                     if item:
                         hit = True
                         self._cache_exact(item, file_uid, sha_cache_key)
-                        return self._done(self._with_command(item, output_command, source_message), reason, started, 1.0)
+                        return self._done(
+                            self._with_command(
+                                item,
+                                output_command_from_message(source_message, item.collection),
+                                source_message,
+                            ),
+                            reason,
+                            started,
+                            1.0,
+                        )
 
-                # 4) exact sampled video signature.
+                # 5) Exact sampled video signature.
                 if media.media_type == "video" and media_hash.video_signature:
-                    item = await lookup_backend.exact_video_signature(media_hash.video_signature, lookup_collections)
+                    item = None
                     reason = "video_signature"
-                    if not item and ((manual and not collections) or catch_spawn_global_fallback):
-                        item = await lookup_backend.exact_video_signature(media_hash.video_signature, None)
+                    if collections:
+                        item = await lookup_backend.exact_video_signature(
+                            media_hash.video_signature,
+                            collections,
+                        )
+                    if not item:
+                        item = await lookup_backend.exact_video_signature(
+                            media_hash.video_signature,
+                            None,
+                        )
                         reason = "video_signature_global"
                     if item:
                         hit = True
                         self._cache_exact(item, file_uid, sha_cache_key)
-                        return self._done(self._with_command(item, output_command, source_message), reason, started, 1.0)
+                        return self._done(
+                            self._with_command(
+                                item,
+                                output_command_from_message(source_message, item.collection),
+                                source_message,
+                            ),
+                            reason,
+                            started,
+                            1.0,
+                        )
 
-                # 5) source-scoped similarity.
-                item, confidence = await self._match_similarity(media_hash, media.media_type, lookup_collections, global_mode=False)
+                # 6) Source-scoped similarity hash.
+                item = None
+                confidence = 0.0
+                if collections:
+                    item, confidence = await self._match_similarity(
+                        media_hash,
+                        media.media_type,
+                        collections,
+                        global_mode=False,
+                    )
                 reason = "photo_multihash" if media.media_type == "photo" else "video_multiframe"
                 if item:
                     hit = True
                     self._cache_exact(item, file_uid, sha_cache_key)
                     return self._done(self._with_command(item, output_command, source_message), reason, started, confidence)
 
-                # 6) controlled global similarity fallback. Exact fallbacks above are always preferred.
-                if catch_spawn_global_fallback or (manual and not collections):
-                    item, confidence = await self._match_similarity(media_hash, media.media_type, None, global_mode=True)
-                    if item:
-                        hit = True
-                        self._cache_exact(item, file_uid, sha_cache_key)
-                        return self._done(
-                            self._with_command(item, output_command_from_message(source_message, item.collection), source_message),
-                            f"{reason}_global",
-                            started,
-                            confidence,
-                        )
+                # 7) Global similarity hash fallback. This stage is mandatory
+                # after source-scoped hash/similarity misses for BOTH Auto and Manual.
+                item, confidence = await self._match_similarity(
+                    media_hash,
+                    media.media_type,
+                    None,
+                    global_mode=True,
+                )
+                if item:
+                    hit = True
+                    self._cache_exact(item, file_uid, sha_cache_key)
+                    return self._done(
+                        self._with_command(
+                            item,
+                            output_command_from_message(source_message, item.collection),
+                            source_message,
+                        ),
+                        f"{reason}_global",
+                        started,
+                        confidence,
+                    )
 
-                # Origin is retained as a late exact fallback for forwarded/archive
+                # Origin is retained as a final exact fallback for forwarded/archive
                 # records, so UID/global-UID and hash matching always keep priority.
                 origin = source_origin_key(source_message)
                 if origin:
-                    item = await lookup_backend.exact_origin(origin, lookup_collections)
-                    if not item and ((manual and not collections) or catch_spawn_global_fallback):
+                    item = None
+                    if collections:
+                        item = await lookup_backend.exact_origin(origin, collections)
+                    if not item:
                         item = await lookup_backend.exact_origin(origin, None)
                     if item:
                         hit = True
