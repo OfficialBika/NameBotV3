@@ -43,11 +43,13 @@ class LookupBackend:
         uid: str,
         *,
         preferred_collection: str = "items_character_catcher",
+        preferred_collections: list[str] | None = None,
     ) -> ItemSnapshot | None:
         # Global UID is always authoritative to MongoDB in the unified-DB path.
         return await mongo_exact_lookup.global_exact_uid(
             uid,
             preferred_collection=preferred_collection,
+            preferred_collections=preferred_collections,
         )
 
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
