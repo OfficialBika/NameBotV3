@@ -706,27 +706,64 @@ class LookupService:
         # SQLite is a fast secondary index, never an authority. If it has no
         # verified match, query MongoDB using the same lookup-only projection.
         if best_item is None and settings.lookup_engine_mode == "sqlite":
+            mongo_limit = min(max(settings.photo_max_candidates, 2500), 10000)
+            seen = {(item.collection, item.mongo_id) for item in candidates}
+
+            # Modern records normally contain both pHash and dHash. Requiring one
+            # chunk hit from each hash dramatically narrows the Mongo candidate set
+            # while preserving all records that satisfy both configured distance
+            # thresholds. If that strict pass does not verify a match, immediately
+            # fall back to the existing OR/legacy candidate query for compatibility.
+            require_both = bool(media_hash.phash and media_hash.dhash)
             mongo_candidates = await lookup_backend.mongo_photo_candidates_fallback(
                 collections,
-                min(max(settings.photo_max_candidates, 2500), 10000),
+                mongo_limit,
                 phash=media_hash.phash,
                 dhash=media_hash.dhash,
                 phash_threshold=phash_threshold,
                 dhash_threshold=settings.photo_dhash_threshold,
+                require_both_hashes=require_both,
             )
-            seen = {(item.collection, item.mongo_id) for item in candidates}
             mongo_candidates = [
                 item for item in mongo_candidates
                 if (item.collection, item.mongo_id) not in seen
             ]
             best_item, best_score = await evaluate(mongo_candidates)
             log.info(
-                "HASH DEBUG mongo_photo_candidates scope=%s count=%s verified=%s score=%.3f",
+                "HASH DEBUG mongo_photo_candidates scope=%s mode=%s count=%s verified=%s score=%.3f",
                 collections,
+                "dual" if require_both else "legacy_or",
                 len(mongo_candidates),
                 bool(best_item),
                 best_score,
             )
+
+            if best_item is None and require_both:
+                relaxed = await lookup_backend.mongo_photo_candidates_fallback(
+                    collections,
+                    mongo_limit,
+                    phash=media_hash.phash,
+                    dhash=media_hash.dhash,
+                    phash_threshold=phash_threshold,
+                    dhash_threshold=settings.photo_dhash_threshold,
+                    require_both_hashes=False,
+                )
+                relaxed = [
+                    item for item in relaxed
+                    if (item.collection, item.mongo_id) not in seen
+                    and (item.collection, item.mongo_id) not in {
+                        (candidate.collection, candidate.mongo_id)
+                        for candidate in mongo_candidates
+                    }
+                ]
+                best_item, best_score = await evaluate(relaxed)
+                log.info(
+                    "HASH DEBUG mongo_photo_candidates scope=%s mode=relaxed_or count=%s verified=%s score=%.3f",
+                    collections,
+                    len(relaxed),
+                    bool(best_item),
+                    best_score,
+                )
         return best_item, best_score
 
     async def _match_video(self, media_hash: MediaHash, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
