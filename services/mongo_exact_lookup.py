@@ -728,6 +728,8 @@ class MongoExactLookup:
         dhash: str | None,
         phash_threshold: int,
         dhash_threshold: int,
+        *,
+        require_both: bool = False,
     ) -> dict[str, Any]:
         """Build the indexed photo candidate query used by Adding-Helperbot."""
         ors: list[dict[str, Any]] = []
@@ -740,6 +742,8 @@ class MongoExactLookup:
         if dhash_chunks:
             ors.append({"dhash_chunks": {"$in": dhash_chunks}})
 
+        if require_both and len(ors) == 2:
+            return {"$and": ors}
         if ors:
             return {"$or": ors}
 
@@ -781,6 +785,7 @@ class MongoExactLookup:
         dhash: str | None = None,
         phash_threshold: int | None = None,
         dhash_threshold: int | None = None,
+        require_both_hashes: bool = False,
     ) -> list[ItemSnapshot]:
         """Return relevant photo candidates using Mongo hash chunks first."""
         selected = self._collections(collections)
@@ -802,6 +807,7 @@ class MongoExactLookup:
             dhash,
             p_threshold,
             d_threshold,
+            require_both=require_both_hashes,
         )
         legacy_query = self._photo_legacy_candidate_query()
         has_targeted_hash = bool(
