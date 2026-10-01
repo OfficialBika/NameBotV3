@@ -94,7 +94,10 @@ def hash_photo(data: bytes) -> MediaHash:
                 dhash=str(imagehash.dhash(image)),
                 whash=str(imagehash.whash(image)),
                 colorhash=str(imagehash.colorhash(image)),
-                crop_hash=str(imagehash.crop_resistant_hash(image)),
+                # crop_resistant_hash is retained in stored DB records for compatibility,
+                # but the lookup verifier does not use it. Avoid computing this expensive
+                # fingerprint on every live lookup request.
+                crop_hash=None,
                 width=width,
                 height=height,
             )
