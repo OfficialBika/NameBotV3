@@ -244,6 +244,7 @@ class LookupBackend:
         dhash: str | None = None,
         phash_threshold: int | None = None,
         dhash_threshold: int | None = None,
+        require_both_hashes: bool = False,
     ) -> list[ItemSnapshot]:
         return await mongo_exact_lookup.photo_candidates(
             collections,
@@ -252,6 +253,7 @@ class LookupBackend:
             dhash=dhash,
             phash_threshold=phash_threshold,
             dhash_threshold=dhash_threshold,
+            require_both_hashes=require_both_hashes,
         )
 
     async def mongo_video_candidates_fallback(
