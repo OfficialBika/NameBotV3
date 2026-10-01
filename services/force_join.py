@@ -16,8 +16,8 @@ from utils.ttl_cache import TTLCache
 log = logging.getLogger(__name__)
 router = Router(name="force_join")
 
-_join_cache: TTLCache[str, bool] = TTLCache(10000, settings.force_join_positive_cache_seconds)
-_prompt_cache: TTLCache[str, bool] = TTLCache(10000, settings.force_join_prompt_throttle_seconds)
+_join_cache: TTLCache[str, bool] = TTLCache(3000, settings.force_join_positive_cache_seconds)
+_prompt_cache: TTLCache[str, bool] = TTLCache(3000, settings.force_join_prompt_throttle_seconds)
 
 
 def _force_join_channels() -> list[str]:
