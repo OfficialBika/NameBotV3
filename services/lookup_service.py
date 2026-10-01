@@ -433,6 +433,10 @@ class LookupService:
                         bool(media_hash.dhash),
                         len(data),
                     )
+                    # The original media bytes are no longer needed after the
+                    # fingerprint has been computed. Release this potentially large
+                    # buffer before candidate lists/Mongo fallbacks are materialized.
+                    del data
                 # 4) Decoded canonical pixel hash exact match for photos.
                 log.info(
                     "HASH DEBUG pixel_sha_stage message=%s enabled=%s",
