@@ -337,9 +337,9 @@ class Settings:
     sqlite_busy_timeout_ms: int = _int("SQLITE_BUSY_TIMEOUT_MS", 5000)
     sqlite_full_rebuild_seconds: int = _int("SQLITE_FULL_REBUILD_SECONDS", 0)
 
-    result_cache_max_items: int = _int("RESULT_CACHE_MAX_ITEMS", 150000)
-    result_cache_ttl_seconds: int = _int("RESULT_CACHE_TTL_SECONDS", 7200)
-    miss_cache_ttl_seconds: int = _int("MISS_CACHE_TTL_SECONDS", 120)
+    result_cache_max_items: int = _int("RESULT_CACHE_MAX_ITEMS", 5000)
+    result_cache_ttl_seconds: int = _int("RESULT_CACHE_TTL_SECONDS", 900)
+    miss_cache_ttl_seconds: int = _int("MISS_CACHE_TTL_SECONDS", 60)
 
     photo_phash_threshold: int = _int("PHOTO_PHASH_THRESHOLD", 8)
     photo_dhash_threshold: int = _int("PHOTO_DHASH_THRESHOLD", 12)
@@ -357,8 +357,8 @@ class Settings:
     video_sample_points: Tuple[float, ...] = field(default_factory=lambda: _sample_points("VIDEO_SAMPLE_POINTS", (0.2, 0.5, 0.8)))
     video_v3_sample_points: Tuple[float, ...] = field(default_factory=lambda: _sample_points("VIDEO_V3_SAMPLE_POINTS", (0.05, 0.15, 0.30, 0.50, 0.70, 0.85, 0.95)))
 
-    max_concurrent_downloads: int = _int("MAX_CONCURRENT_DOWNLOADS", 10)
-    max_concurrent_lookups: int = _int("MAX_CONCURRENT_LOOKUPS", 50)
+    max_concurrent_downloads: int = _int("MAX_CONCURRENT_DOWNLOADS", 2)
+    max_concurrent_lookups: int = _int("MAX_CONCURRENT_LOOKUPS", 6)
     download_timeout_seconds: int = _int("DOWNLOAD_TIMEOUT_SECONDS", 20)
 
     strict_forward_source_lookup: bool = _bool("STRICT_FORWARD_SOURCE_LOOKUP", True)
