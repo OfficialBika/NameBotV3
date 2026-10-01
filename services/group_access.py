@@ -9,9 +9,9 @@ from config import settings
 from database.mongo import get_db
 from utils.ttl_cache import TTLCache
 
-_group_cache: TTLCache[int, bool] = TTLCache(5000, settings.gapprove_cache_seconds)
-_user_touch_cache: TTLCache[int, bool] = TTLCache(20000, 600)
-_group_touch_cache: TTLCache[int, bool] = TTLCache(5000, 600)
+_group_cache: TTLCache[int, bool] = TTLCache(3000, settings.gapprove_cache_seconds)
+_user_touch_cache: TTLCache[int, bool] = TTLCache(5000, 600)
+_group_touch_cache: TTLCache[int, bool] = TTLCache(2000, 600)
 
 
 def is_owner_or_sudo(user_id: int | None) -> bool:
