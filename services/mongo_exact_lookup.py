@@ -379,6 +379,23 @@ class MongoExactLookup:
                         unknown_sources.append(source or "<empty>")
                     items.append(item)
 
+                if not items and unified_adding_db.enabled:
+                    # Legacy datasets may still live in their original physical
+                    # collections while characters is being migrated. Check them
+                    # only after the canonical indexed query misses.
+                    legacy_item = await self._legacy_exact_uids(
+                        values,
+                        preferred_collections or None,
+                    )
+                    if legacy_item:
+                        log.info(
+                            "Global UID legacy recovery source=%s name=%s uids=%s",
+                            legacy_item.collection,
+                            legacy_item.name,
+                            values,
+                        )
+                        return legacy_item
+
                 if not items:
                     log.warning(
                         "Global UID miss db=%s collection=%s uids=%s raw_matches=%s "
