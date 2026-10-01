@@ -163,7 +163,7 @@ async def build_status_text(message: Message) -> str:
         f"‣ Blacklisted Users : {_fmt_int(blacklisted)}\n\n"
         "⚡ LOOKUP ENGINE V3.1\n"
         f"{engine_text}\n"
-        f"‣ Result Cache : {len(lookup_service.result_cache)} / {settings.result_cache_max_items}\n"
+        f"‣ UID L1 Cache : {len(lookup_service.uid_name_cache)} / {settings.result_cache_max_items}\n"
         f"‣ Bot Latency : {_fmt_ms(bot_ping)}\n\n"
         "🤖 Supported Bot List\n" + "\n".join(supported)
     )
@@ -186,7 +186,7 @@ async def build_stats_text(message: Message) -> str:
         f"‣ RAM Total : {total}\n\n"
         "⚡ LOOKUP ENGINE V3.1\n"
         f"{engine_text}\n"
-        f"‣ Result Cache : {len(lookup_service.result_cache)}\n"
+        f"‣ UID L1 Cache : {len(lookup_service.uid_name_cache)}\n"
         f"‣ Lookup Hits : {_fmt_int(int(p.get('lookup_hits', 0)))}\n"
         f"‣ Lookup Misses : {_fmt_int(int(p.get('lookup_misses', 0)))}\n"
         f"‣ EMA latency : {float(p.get('lookup_ema_ms', 0)):.0f} ms"
