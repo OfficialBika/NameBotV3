@@ -11,7 +11,7 @@ from aiogram import Bot
 from aiogram.types import Message
 
 from config import settings
-from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video, normalized_hamming
+from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video, normalized_hamming, sha256_bytes
 from services.lookup_backend import lookup_backend
 from services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
@@ -335,33 +335,21 @@ class LookupService:
                     )
                     return self._done(None, "download_failed", started)
 
-                media_hash = await asyncio.to_thread(
-                    hash_photo if media.media_type == "photo" else hash_video,
-                    data,
-                )
+                # 3) Raw SHA-256 is much cheaper than decoding an image or
+                # sampling a video. Check it before any heavyweight fingerprinting.
+                raw_sha = await asyncio.to_thread(sha256_bytes, data)
                 log.info(
-                    "HASH DEBUG computed message=%s sha=%s pixel_sha=%s phash=%s dhash=%s bytes=%s",
+                    "HASH DEBUG raw_sha_stage message=%s sha_present=%s",
                     getattr(message, "message_id", None),
-                    bool(media_hash.sha256),
-                    bool(media_hash.pixel_sha256),
-                    bool(media_hash.phash),
-                    bool(media_hash.dhash),
-                    len(data),
-                )
-                # 3) Hash fallback: source-scoped exact hash first, then global
-                # exact hash. This stage runs for BOTH Auto and Manual lookup.
-                log.info(
-                    "HASH DEBUG sha_stage message=%s sha_present=%s",
-                    getattr(message, "message_id", None),
-                    bool(media_hash.sha256),
+                    bool(raw_sha),
                 )
                 item = None
                 reason = "sha"
-                if media_hash.sha256:
+                if raw_sha:
                     if collections:
-                        item = await lookup_backend.exact_sha(media_hash.sha256, collections)
+                        item = await lookup_backend.exact_sha(raw_sha, collections)
                     if not item:
-                        item = await lookup_backend.exact_sha(media_hash.sha256, None)
+                        item = await lookup_backend.exact_sha(raw_sha, None)
                         reason = "sha_global"
                     if item:
                         hit = True
@@ -376,6 +364,21 @@ class LookupService:
                             started,
                             1.0,
                         )
+
+                # Only a SHA miss reaches the heavyweight image/video fingerprinting path.
+                media_hash = await asyncio.to_thread(
+                    hash_photo if media.media_type == "photo" else hash_video,
+                    data,
+                )
+                log.info(
+                    "HASH DEBUG computed message=%s sha=%s pixel_sha=%s phash=%s dhash=%s bytes=%s",
+                    getattr(message, "message_id", None),
+                    bool(media_hash.sha256),
+                    bool(media_hash.pixel_sha256),
+                    bool(media_hash.phash),
+                    bool(media_hash.dhash),
+                    len(data),
+                )
 
                 # 4) Decoded canonical pixel hash exact match for photos.
                 log.info(
