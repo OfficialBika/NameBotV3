@@ -218,6 +218,18 @@ class SQLiteFingerprintIndex:
             key: getattr(item, key, None)
             for key in SQLITE_ITEM_FIELDS
         }
+        # VideoSampleHash is a frozen dataclass and is not JSON serializable by
+        # the stdlib encoder. Convert only this nested field to plain mappings;
+        # all other compact lookup fields remain unchanged.
+        compact["video_samples"] = [
+            {
+                "position": sample.position,
+                "frame_index": sample.frame_index,
+                "phash": sample.phash,
+                "dhash": sample.dhash,
+            }
+            for sample in (item.video_samples or ())
+        ]
         return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
