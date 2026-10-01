@@ -23,3 +23,5 @@ services:
         value: "10"
       - key: SQLITE_BUILD_ON_START
         value: "true"
+      - key: ENABLE_HASH_FALLBACK
+        value: "true"
