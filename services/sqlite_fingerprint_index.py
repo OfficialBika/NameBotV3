@@ -1147,7 +1147,6 @@ class SQLiteFingerprintIndex:
         return list(items.values())[:max_candidates]
 
     async def video_candidates(
-    async def video_candidates(
         self,
         collections: list[str] | None,
         duration_ms: int,
