@@ -326,13 +326,43 @@ class LookupService:
                 # STRICT_EXACT_LOOKUP_ONLY remains accepted for config compatibility;
                 # ENABLE_HASH_FALLBACK is the actual safety switch for hash matching.
                 if not settings.enable_hash_fallback:
+                    log.warning(
+                        "HASH DEBUG disabled message=%s enable_hash_fallback=%s",
+                        getattr(message, "message_id", None),
+                        settings.enable_hash_fallback,
+                    )
                     return self._done(None, "hash_fallback_disabled", started)
 
-                data = await self._download(bot, str(getattr(media.obj, "file_id", "") or ""))
+                download_file_id = str(getattr(media.obj, "file_id", "") or "").strip()
+                log.info(
+                    "HASH DEBUG start message=%s media_type=%s source=%s file_id_present=%s",
+                    getattr(message, "message_id", None),
+                    media.media_type,
+                    collections,
+                    bool(download_file_id),
+                )
+                data = await self._download(bot, download_file_id)
                 if not data:
+                    log.warning(
+                        "HASH DEBUG download_failed message=%s media_type=%s",
+                        getattr(message, "message_id", None),
+                        media.media_type,
+                    )
                     return self._done(None, "download_failed", started)
 
-                media_hash = await asyncio.to_thread(hash_photo if media.media_type == "photo" else hash_video, data)
+                media_hash = await asyncio.to_thread(
+                    hash_photo if media.media_type == "photo" else hash_video,
+                    data,
+                )
+                log.info(
+                    "HASH DEBUG computed message=%s sha=%s pixel_sha=%s phash=%s dhash=%s bytes=%s",
+                    getattr(message, "message_id", None),
+                    bool(media_hash.sha256),
+                    bool(media_hash.pixel_sha256),
+                    bool(media_hash.phash),
+                    bool(media_hash.dhash),
+                    len(data),
+                )
                 sha_cache_key = f"sha:{filter_tag}:{media_hash.sha256 or ''}"
                 if media_hash.sha256:
                     cached = self.result_cache.get(sha_cache_key)
@@ -342,6 +372,11 @@ class LookupService:
 
                 # 3) Hash fallback: source-scoped exact hash first, then global
                 # exact hash. This stage runs for BOTH Auto and Manual lookup.
+                log.info(
+                    "HASH DEBUG sha_stage message=%s sha_present=%s",
+                    getattr(message, "message_id", None),
+                    bool(media_hash.sha256),
+                )
                 item = None
                 reason = "sha"
                 if media_hash.sha256:
@@ -365,6 +400,11 @@ class LookupService:
                         )
 
                 # 4) Decoded canonical pixel hash exact match for photos.
+                log.info(
+                    "HASH DEBUG pixel_sha_stage message=%s enabled=%s",
+                    getattr(message, "message_id", None),
+                    bool(media.media_type == "photo" and media_hash.pixel_sha256),
+                )
                 if media.media_type == "photo" and media_hash.pixel_sha256:
                     item = None
                     reason = "pixel_sha"
@@ -423,6 +463,14 @@ class LookupService:
                         )
 
                 # 6) Source-scoped similarity hash.
+                log.info(
+                    "HASH DEBUG similarity_stage message=%s media_type=%s scope=%s phash=%s dhash=%s",
+                    getattr(message, "message_id", None),
+                    media.media_type,
+                    collections,
+                    bool(media_hash.phash),
+                    bool(media_hash.dhash),
+                )
                 item = None
                 confidence = 0.0
                 if collections:
@@ -603,6 +651,13 @@ class LookupService:
             settings.photo_max_candidates,
         )
         best_item, best_score = await evaluate(candidates)
+        log.info(
+            "HASH DEBUG sqlite_photo_candidates scope=%s count=%s verified=%s score=%.3f",
+            collections,
+            len(candidates),
+            bool(best_item),
+            best_score,
+        )
 
         # SQLite is a fast secondary index, never an authority. If it has no
         # verified match, query MongoDB using the same lookup-only projection.
@@ -621,6 +676,13 @@ class LookupService:
                 if (item.collection, item.mongo_id) not in seen
             ]
             best_item, best_score = await evaluate(mongo_candidates)
+            log.info(
+                "HASH DEBUG mongo_photo_candidates scope=%s count=%s verified=%s score=%.3f",
+                collections,
+                len(mongo_candidates),
+                bool(best_item),
+                best_score,
+            )
         return best_item, best_score
 
     async def _match_video(self, media_hash: MediaHash, collections: list[str] | None, *, global_mode: bool) -> tuple[ItemSnapshot | None, float]:
