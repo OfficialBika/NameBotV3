@@ -29,7 +29,7 @@ SQLITE_ITEM_FIELDS = (
     "crop_hash", "frame_hashes", "video_samples", "video_signature", "duration_ms",
     "origin_chat_id", "origin_message_id",
 )
-SQLITE_INDEX_SCHEMA_VERSION = "3"
+SQLITE_INDEX_SCHEMA_VERSION = "4"
 
 
 class SQLiteFingerprintIndex:
@@ -264,38 +264,54 @@ class SQLiteFingerprintIndex:
         }
 
     async def _matches_mongo_counts(self) -> bool:
-        """Verify that the local secondary index is complete before marking it ready.
-
-        SQLite is rebuildable and may survive a Render restart with only a partial
-        build. A non-zero row count alone is therefore not sufficient evidence that
-        similarity lookup is safe.
-        """
+        """Verify that the local secondary index covers the canonical data set."""
         if self.db is None:
             return False
         try:
+            indexed_total = await self.count()
+
+            if unified_adding_db.enabled:
+                mongo_total = int(
+                    await unified_adding_db.collection().count_documents(
+                        self._indexable_mongo_query()
+                    )
+                )
+                if indexed_total != mongo_total:
+                    log.warning(
+                        "SQLite completeness mismatch canonical db=%s collection=%s "
+                        "sqlite=%s mongo=%s",
+                        unified_adding_db.db_name,
+                        unified_adding_db.collection_name,
+                        indexed_total,
+                        mongo_total,
+                    )
+                    return False
+                return True
+
+            async def mongo_count(collection: str) -> tuple[str, int]:
+                return collection, int(
+                    await get_db()[collection].count_documents(
+                        self._indexable_mongo_query()
+                    )
+                )
+
             cursor = await self.db.execute(
-                "SELECT collection, COUNT(*) AS n FROM fingerprint_items GROUP BY collection"
+                "SELECT collection, COUNT(*) AS n "
+                "FROM fingerprint_items GROUP BY collection"
             )
             rows = await cursor.fetchall()
             await cursor.close()
-            indexed = {str(row["collection"]): int(row["n"] or 0) for row in rows}
-
-            async def mongo_count(collection: str) -> tuple[str, int]:
-                if unified_adding_db.enabled:
-                    query = unified_adding_db.scoped_query(
-                        self._indexable_mongo_query(),
-                        [collection],
-                    )
-                    value = await unified_adding_db.collection().count_documents(query)
-                    return collection, int(value)
-                return collection, int(
-                    await get_db()[collection].count_documents(self._indexable_mongo_query())
-                )
+            indexed = {
+                str(row["collection"]): int(row["n"] or 0)
+                for row in rows
+            }
 
             counts = await asyncio.gather(
                 *(mongo_count(collection) for collection in COLLECTION_TO_OUTPUT_COMMAND)
             )
+            expected_total = 0
             for collection, mongo_count_value in counts:
+                expected_total += mongo_count_value
                 if indexed.get(collection, 0) != mongo_count_value:
                     log.warning(
                         "SQLite completeness mismatch collection=%s sqlite=%s mongo=%s",
@@ -304,7 +320,7 @@ class SQLiteFingerprintIndex:
                         mongo_count_value,
                     )
                     return False
-            return True
+            return indexed_total == expected_total
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -359,11 +375,11 @@ class SQLiteFingerprintIndex:
                 if unified_adding_db.enabled:
                     batch: list[ItemSnapshot] = []
                     try:
+                        # Index every canonical document. Source-aware lookup
+                        # can use known source keys, while global lookup must also
+                        # retain records from newly added/previously unknown sources.
                         cursor = unified_adding_db.collection().find(
-                            unified_adding_db.scoped_query(
-                                {},
-                                list(COLLECTION_TO_OUTPUT_COMMAND.keys()),
-                            ),
+                            {},
                             projection=SQLITE_LOOKUP_PROJECTION,
                         ).batch_size(max(1, settings.sqlite_batch_size))
                         async for doc in cursor:
@@ -515,16 +531,22 @@ class SQLiteFingerprintIndex:
                             collections: list[str] | None = None) -> ItemSnapshot | None:
         if not self.ready or self.db is None or not key_value:
             return None
-        selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
-        if not selected:
+        selected = list(collections) if collections else None
+        if selected == []:
             return None
-        marks = ",".join("?" for _ in selected)
-        cursor = await self.db.execute(
-            f"SELECT fi.item_json FROM exact_keys ek "
-            f"JOIN fingerprint_items fi ON fi.collection=ek.collection AND fi.mongo_id=ek.mongo_id "
-            f"WHERE ek.key_type=? AND ek.key_value=? AND ek.collection IN ({marks}) LIMIT 1",
-            [key_type, str(key_value), *selected],
+        sql = (
+            "SELECT fi.item_json FROM exact_keys ek "
+            "JOIN fingerprint_items fi "
+            "ON fi.collection=ek.collection AND fi.mongo_id=ek.mongo_id "
+            "WHERE ek.key_type=? AND ek.key_value=?"
         )
+        params: list[Any] = [key_type, str(key_value)]
+        if selected is not None:
+            marks = ",".join("?" for _ in selected)
+            sql += f" AND ek.collection IN ({marks})"
+            params.extend(selected)
+        sql += " LIMIT 1"
+        cursor = await self.db.execute(sql, params)
         row = await cursor.fetchone()
         await cursor.close()
         return self._item_from_json(str(row["item_json"])) if row else None
@@ -549,22 +571,25 @@ class SQLiteFingerprintIndex:
         if not values:
             return None
 
-        selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
-        if not selected:
+        selected = list(collections) if collections else None
+        if selected == []:
             return None
 
         marks = ",".join("?" for _ in values)
-        collection_marks = ",".join("?" for _ in selected)
-        cursor = await self.db.execute(
-            f"SELECT fi.collection, fi.mongo_id, fi.item_json "
-            f"FROM exact_keys ek "
-            f"JOIN fingerprint_items fi "
-            f"ON fi.collection=ek.collection AND fi.mongo_id=ek.mongo_id "
-            f"WHERE ek.key_type='uid' AND ek.key_value IN ({marks}) "
-            f"AND ek.collection IN ({collection_marks}) "
-            f"LIMIT 100",
-            [*values, *selected],
+        sql = (
+            "SELECT fi.collection, fi.mongo_id, fi.item_json "
+            "FROM exact_keys ek "
+            "JOIN fingerprint_items fi "
+            "ON fi.collection=ek.collection AND fi.mongo_id=ek.mongo_id "
+            f"WHERE ek.key_type='uid' AND ek.key_value IN ({marks})"
         )
+        params: list[Any] = list(values)
+        if selected is not None:
+            collection_marks = ",".join("?" for _ in selected)
+            sql += f" AND ek.collection IN ({collection_marks})"
+            params.extend(selected)
+        sql += " LIMIT 100"
+        cursor = await self.db.execute(sql, params)
         rows = await cursor.fetchall()
         await cursor.close()
         if not rows:
@@ -712,11 +737,10 @@ class SQLiteFingerprintIndex:
         failed = False
         if unified_adding_db.enabled:
             try:
+                # Delta-sync the whole canonical collection so newly
+                # introduced source_key values are indexed too.
                 cursor = unified_adding_db.collection().find(
-                    unified_adding_db.scoped_query(
-                        {"updated_at": {"$gt": start, "$lte": next_watermark}},
-                        list(COLLECTION_TO_OUTPUT_COMMAND.keys()),
-                    ),
+                    {"updated_at": {"$gt": start, "$lte": next_watermark}},
                     projection=LOOKUP_PROJECTION,
                 ).batch_size(max(1, settings.sqlite_batch_size))
                 batch: list[ItemSnapshot] = []
@@ -818,28 +842,31 @@ class SQLiteFingerprintIndex:
 
     async def _photo_rows_for_hash(
         self,
-        collections: list[str],
+        collections: list[str] | None,
         field_name: str,
         value: str | None,
         threshold: int,
         limit: int,
     ) -> list[aiosqlite.Row]:
-        if self.db is None or not value or not collections:
+        if self.db is None or not value:
             return []
         count = min(HashChunkIndex.COUNTS, key=lambda number: abs(number - (threshold + 1)))
         chunks = HashChunkIndex._chunks(value, count)
         if not chunks:
             return []
-        collection_marks = ",".join("?" for _ in collections)
         chunk_clauses = " OR ".join("(hc.position=? AND hc.chunk_value=?)" for _ in chunks)
         sql = (
             "SELECT DISTINCT fi.collection, fi.mongo_id, fi.item_json "
             "FROM hash_chunks hc JOIN fingerprint_items fi "
             "ON fi.collection=hc.collection AND fi.mongo_id=hc.mongo_id "
-            f"WHERE hc.collection IN ({collection_marks}) AND hc.field=? AND hc.chunk_count=? "
-            f"AND ({chunk_clauses}) LIMIT ?"
+            "WHERE hc.field=? AND hc.chunk_count=? "
+            f"AND ({chunk_clauses})"
         )
-        params: list[Any] = list(collections) + [field_name, count]
+        params: list[Any] = [field_name, count]
+        if collections:
+            collection_marks = ",".join("?" for _ in collections)
+            sql += f" AND hc.collection IN ({collection_marks})"
+            params.extend(collections)
         for position, chunk in enumerate(chunks):
             params.extend([position, str(chunk)])
         params.append(max(1, limit))
@@ -859,7 +886,7 @@ class SQLiteFingerprintIndex:
     ) -> list[ItemSnapshot]:
         if self.db is None:
             return []
-        selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
+        selected = list(collections) if collections else None
         rows = await self._photo_rows_for_hash(
             selected, "phash", phash, phash_threshold, max_candidates
         )
@@ -898,32 +925,32 @@ class SQLiteFingerprintIndex:
     ) -> list[ItemSnapshot]:
         if self.db is None:
             return []
-        selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
-        marks = ",".join("?" for _ in selected)
-        params: list[Any] = list(selected)
+        selected = list(collections) if collections else None
+        marks = ",".join("?" for _ in selected) if selected else ""
+        params: list[Any] = list(selected or [])
         if duration_ms > 0:
             second = int(round(duration_ms / 1000))
-            sql = (
-                f"SELECT item_json FROM fingerprint_items WHERE collection IN ({marks}) "
-                "AND media_type='video' AND duration_bucket BETWEEN ? AND ? LIMIT ?"
-            )
+            sql = "SELECT item_json FROM fingerprint_items WHERE "
+            if selected:
+                sql += f"collection IN ({marks}) AND "
+            sql += "media_type='video' AND duration_bucket BETWEEN ? AND ? LIMIT ?"
             params.extend([
                 max(0, second - tolerance_seconds),
                 second + tolerance_seconds,
                 max(1, settings.video_max_candidates),
             ])
         else:
-            sql = (
-                f"SELECT item_json FROM fingerprint_items WHERE collection IN ({marks}) "
-                "AND media_type='video' LIMIT ?"
-            )
+            sql = "SELECT item_json FROM fingerprint_items WHERE "
+            if selected:
+                sql += f"collection IN ({marks}) AND "
+            sql += "media_type='video' LIMIT ?"
             params.append(max(1, settings.video_max_candidates))
         cursor = await self.db.execute(sql, params)
         rows = await cursor.fetchall()
         await cursor.close()
 
         # Preserve V2 compatibility when duration metadata is absent/mismatched in a scoped search.
-        if not rows and collections:
+        if not rows and selected:
             cursor = await self.db.execute(
                 f"SELECT item_json FROM fingerprint_items WHERE collection IN ({marks}) "
                 "AND media_type='video' LIMIT ?",
