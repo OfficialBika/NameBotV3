@@ -51,7 +51,17 @@ class LookupBackend:
                 preferred_collections=preferred,
             )
             if item:
-                return item
+                # During a partial rebuild, never let an already-indexed
+                # cross-source record beat a source that may be indexed later.
+                # Once the full index is ready, the local result is authoritative
+                # for lookup ordering and can return immediately.
+                if not preferred or item.collection in preferred or sqlite_index.ready:
+                    return item
+                return await mongo_exact_lookup.global_exact_uids(
+                    values,
+                    preferred_collection=preferred[0] if preferred else "items_character_catcher",
+                    preferred_collections=preferred,
+                )
             return await mongo_exact_lookup.global_exact_uids(
                 values,
                 preferred_collection=preferred[0] if preferred else "items_character_catcher",
