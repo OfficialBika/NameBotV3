@@ -67,8 +67,8 @@ class LookupBackend:
         preferred_collections: list[str] | None = None,
     ) -> ItemSnapshot | None:
         if self.mode == "sqlite":
-            # Global exact lookup is also SQLite-first. Preferred source order is
-            # preserved; Mongo is queried only when validated SQLite has no match.
+            # Global exact lookup is SQLite-first. Mongo is only the authoritative
+            # fallback when the validated local index has no result.
             preferred = list(preferred_collections or [])
             if preferred_collection and preferred_collection not in preferred:
                 preferred.append(preferred_collection)
@@ -78,12 +78,27 @@ class LookupBackend:
                 preferred_collections=preferred,
             )
             if item:
+                log.info(
+                    "UID DEBUG global_sqlite_hit name=%s source=%s uids=%s",
+                    item.name,
+                    item.collection,
+                    list(uids),
+                )
                 return item
-        return await mongo_exact_lookup.global_exact_uids(
+            log.info("UID DEBUG global_sqlite_miss uids=%s; mongo_fallback=true", list(uids))
+        item = await mongo_exact_lookup.global_exact_uids(
             uids,
             preferred_collection=preferred_collection,
             preferred_collections=preferred_collections,
         )
+        if item:
+            log.info(
+                "UID DEBUG global_mongo_hit name=%s source=%s uids=%s",
+                item.name,
+                item.collection,
+                list(uids),
+            )
+        return item
 
     async def global_exact_uid(
         self,
