@@ -728,15 +728,23 @@ class LookupService:
                 item for item in mongo_candidates
                 if (item.collection, item.mongo_id) not in seen
             ]
+            mongo_count = len(mongo_candidates)
             best_item, best_score = await evaluate(mongo_candidates)
             log.info(
                 "HASH DEBUG mongo_photo_candidates scope=%s mode=%s count=%s verified=%s score=%.3f",
                 collections,
                 "dual" if require_both else "legacy_or",
-                len(mongo_candidates),
+                mongo_count,
                 bool(best_item),
                 best_score,
             )
+            # Release the large Mongo candidate list before any relaxed fallback.
+            mongo_seen = {
+                (item.collection, item.mongo_id) for item in mongo_candidates
+            }
+            del mongo_candidates
+            # The SQLite list is also no longer needed once its IDs are captured.
+            del candidates
 
             if best_item is None and require_both:
                 relaxed = await lookup_backend.mongo_photo_candidates_fallback(
@@ -751,10 +759,7 @@ class LookupService:
                 relaxed = [
                     item for item in relaxed
                     if (item.collection, item.mongo_id) not in seen
-                    and (item.collection, item.mongo_id) not in {
-                        (candidate.collection, candidate.mongo_id)
-                        for candidate in mongo_candidates
-                    }
+                    and (item.collection, item.mongo_id) not in mongo_seen
                 ]
                 best_item, best_score = await evaluate(relaxed)
                 log.info(
