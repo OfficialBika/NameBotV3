@@ -104,6 +104,12 @@ class LookupService:
         )
         self.download_sem = asyncio.Semaphore(settings.max_concurrent_downloads)
         self.lookup_sem = asyncio.Semaphore(settings.max_concurrent_lookups)
+        # OpenCV/Pillow hashing can temporarily allocate large decoded pixel buffers.
+        # Keep that heavy media stage bounded independently from lightweight exact UID
+        # lookups so a burst of misses cannot exhaust the 512 MB Render instance.
+        self.hash_sem = asyncio.Semaphore(
+            max(1, min(2, settings.max_concurrent_lookups))
+        )
         # Share only currently-running lookups for the same source media. This is
         # an in-flight singleflight map, not a persistent/result cache, so RAM is
         # released as soon as the request completes.
@@ -363,68 +369,70 @@ class LookupService:
                     )
                     return self._done(None, "hash_fallback_disabled", started)
 
-                download_file_id = str(getattr(media.obj, "file_id", "") or "").strip()
-                log.info(
-                    "HASH DEBUG start message=%s media_type=%s source=%s file_id_present=%s",
-                    getattr(message, "message_id", None),
-                    media.media_type,
-                    collections,
-                    bool(download_file_id),
-                )
-                data = await self._download(bot, download_file_id)
-                if not data:
-                    log.warning(
-                        "HASH DEBUG download_failed message=%s media_type=%s",
+                # Limit the entire media-download + fingerprint phase to two
+                # concurrent requests. This is the main RAM guard for PIL/OpenCV.
+                async with self.hash_sem:
+                    download_file_id = str(getattr(media.obj, "file_id", "") or "").strip()
+                    log.info(
+                        "HASH DEBUG start message=%s media_type=%s source=%s file_id_present=%s",
                         getattr(message, "message_id", None),
                         media.media_type,
+                        collections,
+                        bool(download_file_id),
                     )
-                    return self._done(None, "download_failed", started)
-
-                # 3) Raw SHA-256 is much cheaper than decoding an image or
-                # sampling a video. Check it before any heavyweight fingerprinting.
-                raw_sha = await asyncio.to_thread(sha256_bytes, data)
-                log.info(
-                    "HASH DEBUG raw_sha_stage message=%s sha_present=%s",
-                    getattr(message, "message_id", None),
-                    bool(raw_sha),
-                )
-                item = None
-                reason = "sha"
-                if raw_sha:
-                    if collections:
-                        item = await lookup_backend.exact_sha(raw_sha, collections)
-                    if not item:
-                        item = await lookup_backend.exact_sha(raw_sha, None)
-                        reason = "sha_global"
-                    if item:
-                        hit = True
-                        self._cache_exact(item, file_uid, filter_tag)
-                        return self._done(
-                            self._with_command(
-                                item,
-                                output_command_from_message(source_message, item.collection),
-                                source_message,
-                            ),
-                            reason,
-                            started,
-                            1.0,
+                    data = await self._download(bot, download_file_id)
+                    if not data:
+                        log.warning(
+                            "HASH DEBUG download_failed message=%s media_type=%s",
+                            getattr(message, "message_id", None),
+                            media.media_type,
                         )
+                        return self._done(None, "download_failed", started)
 
-                # Only a SHA miss reaches the heavyweight image/video fingerprinting path.
-                media_hash = await asyncio.to_thread(
-                    hash_photo if media.media_type == "photo" else hash_video,
-                    data,
-                )
-                log.info(
-                    "HASH DEBUG computed message=%s sha=%s pixel_sha=%s phash=%s dhash=%s bytes=%s",
-                    getattr(message, "message_id", None),
-                    bool(media_hash.sha256),
-                    bool(media_hash.pixel_sha256),
-                    bool(media_hash.phash),
-                    bool(media_hash.dhash),
-                    len(data),
-                )
+                    # Raw SHA-256 is much cheaper than decoding an image or
+                    # sampling a video. Check it before any heavyweight fingerprinting.
+                    raw_sha = await asyncio.to_thread(sha256_bytes, data)
+                    log.info(
+                        "HASH DEBUG raw_sha_stage message=%s sha_present=%s",
+                        getattr(message, "message_id", None),
+                        bool(raw_sha),
+                    )
+                    item = None
+                    reason = "sha"
+                    if raw_sha:
+                        if collections:
+                            item = await lookup_backend.exact_sha(raw_sha, collections)
+                        if not item:
+                            item = await lookup_backend.exact_sha(raw_sha, None)
+                            reason = "sha_global"
+                        if item:
+                            hit = True
+                            self._cache_exact(item, file_uid, filter_tag)
+                            return self._done(
+                                self._with_command(
+                                    item,
+                                    output_command_from_message(source_message, item.collection),
+                                    source_message,
+                                ),
+                                reason,
+                                started,
+                                1.0,
+                            )
 
+                    # Only a SHA miss reaches the heavyweight image/video fingerprinting path.
+                    media_hash = await asyncio.to_thread(
+                        hash_photo if media.media_type == "photo" else hash_video,
+                        data,
+                    )
+                    log.info(
+                        "HASH DEBUG computed message=%s sha=%s pixel_sha=%s phash=%s dhash=%s bytes=%s",
+                        getattr(message, "message_id", None),
+                        bool(media_hash.sha256),
+                        bool(media_hash.pixel_sha256),
+                        bool(media_hash.phash),
+                        bool(media_hash.dhash),
+                        len(data),
+                    )
                 # 4) Decoded canonical pixel hash exact match for photos.
                 log.info(
                     "HASH DEBUG pixel_sha_stage message=%s enabled=%s",
