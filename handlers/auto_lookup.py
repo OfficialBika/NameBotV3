@@ -44,6 +44,11 @@ def _already_processed(message: Message) -> bool:
     key = _key(message)
     if key in _seen:
         return True
+    # Bound the short-lived dedupe map even during a burst of unique media.
+    if len(_seen) >= 5000:
+        oldest = next(iter(_seen), None)
+        if oldest is not None:
+            _seen.pop(oldest, None)
     _seen[key] = now
     return False
 
