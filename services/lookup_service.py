@@ -115,9 +115,9 @@ class LookupService:
         # OpenCV/Pillow hashing can temporarily allocate large decoded pixel buffers.
         # Keep that heavy media stage bounded independently from lightweight exact UID
         # lookups so a burst of misses cannot exhaust the 512 MB Render instance.
-        self.hash_sem = asyncio.Semaphore(
-            max(1, min(2, settings.max_concurrent_lookups))
-        )
+        # One decoded media at a time keeps the 512 MB Render instance from
+        # holding multiple full-resolution PIL/OpenCV buffers simultaneously.
+        self.hash_sem = asyncio.Semaphore(1)
         # Candidate verification materializes ItemSnapshot objects in Python RAM.
         # Keep similarity evaluation serialized on the small Render instance so
         # several hash misses cannot accumulate large candidate lists concurrently.
