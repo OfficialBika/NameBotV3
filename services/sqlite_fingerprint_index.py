@@ -44,6 +44,9 @@ class SQLiteFingerprintIndex:
         self.db: aiosqlite.Connection | None = None
         self.path = settings.sqlite_index_path
         self.ready = False
+        # Exact-key lookups can safely use a clean, partially rebuilt index.
+        # Similarity candidates still wait for the complete index.
+        self.exact_ready = False
         self.building = False
         self.opened_at = 0.0
         self.last_sync_at: datetime | None = None
@@ -124,6 +127,10 @@ class SQLiteFingerprintIndex:
         self.last_sync_at = await self._load_watermark()
         count = await self.count()
         schema_version = await self._schema_version()
+        # An empty index has no stale rows, so exact lookups may run immediately
+        # while the background builder fills it. Non-empty persisted indexes remain
+        # blocked until ensure_built() validates or cleanly rebuilds them.
+        self.exact_ready = count == 0
         # Never serve a persisted SQLite snapshot as authoritative immediately
         # after restart. ensure_built() validates completeness first; until then
         # callers fall back to MongoDB, which remains the source of truth.
@@ -138,6 +145,7 @@ class SQLiteFingerprintIndex:
             await self.db.close()
         self.db = None
         self.ready = False
+        self.exact_ready = False
 
     async def _load_watermark(self) -> datetime | None:
         if self.db is None:
@@ -342,6 +350,7 @@ class SQLiteFingerprintIndex:
             and await self._matches_mongo_counts()
         ):
             self.ready = True
+            self.exact_ready = True
             return
         if existing > 0 and schema_version != SQLITE_INDEX_SCHEMA_VERSION:
             log.info(
@@ -371,6 +380,9 @@ class SQLiteFingerprintIndex:
                         await self.db.execute("DELETE FROM index_meta WHERE key='last_sync_at'")
                         await self.db.commit()
                     self.last_sync_at = None
+                    # The old persisted rows are now gone; partial exact-key reads
+                    # are safe and fall back to Mongo when a record is not built yet.
+                    self.exact_ready = True
 
                 if unified_adding_db.enabled:
                     batch: list[ItemSnapshot] = []
@@ -439,6 +451,7 @@ class SQLiteFingerprintIndex:
                     await self.db.commit()
                 self.last_full_build_monotonic = time.monotonic()
                 self.ready = (await self.count()) > 0 and not failed_collections
+                self.exact_ready = self.exact_ready and not failed_collections
                 if failed_collections:
                     log.warning(
                         "SQLite fingerprint build incomplete items=%s failed_collections=%s; retry will run",
@@ -529,7 +542,7 @@ class SQLiteFingerprintIndex:
 
     async def _exact_lookup(self, key_type: str, key_value: str,
                             collections: list[str] | None = None) -> ItemSnapshot | None:
-        if not self.ready or self.db is None or not key_value:
+        if not self.exact_ready or self.db is None or not key_value:
             return None
         selected = list(collections) if collections else None
         if selected == []:
@@ -563,7 +576,7 @@ class SQLiteFingerprintIndex:
         multiple sources contain the same UID, source preference is honored and
         ambiguous results are rejected rather than choosing randomly.
         """
-        if not self.ready or self.db is None:
+        if not self.exact_ready or self.db is None:
             return None
         values = list(dict.fromkeys(
             str(uid or "").strip() for uid in uids if str(uid or "").strip()
@@ -801,6 +814,7 @@ class SQLiteFingerprintIndex:
             await self.db.commit()
         if changed_total:
             self.ready = True
+            self.exact_ready = True
             log.info("SQLite fingerprint delta sync changed=%s", changed_total)
         return changed_total
 
