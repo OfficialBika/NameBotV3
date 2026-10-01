@@ -60,8 +60,14 @@ class SQLiteFingerprintIndex:
         self.db.row_factory = aiosqlite.Row
         await self.db.execute("PRAGMA journal_mode=WAL")
         await self.db.execute("PRAGMA synchronous=NORMAL")
+        # Keep SQLite's private page cache bounded on Render Free. This is a
+        # disk-backed L2 index, so Python RAM stays focused on request work and
+        # the tiny UID->name L1 cache.
+        await self.db.execute("PRAGMA cache_size=-4096")
+        await self.db.execute("PRAGMA mmap_size=0")
         await self.db.execute("PRAGMA temp_store=MEMORY")
         await self.db.execute(f"PRAGMA busy_timeout={max(100, settings.sqlite_busy_timeout_ms)}")
+        await self.db.execute("PRAGMA wal_autocheckpoint=1000")
         await self.db.executescript(
             """
             CREATE TABLE IF NOT EXISTS index_meta (
