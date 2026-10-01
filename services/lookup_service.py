@@ -110,6 +110,10 @@ class LookupService:
         self.hash_sem = asyncio.Semaphore(
             max(1, min(2, settings.max_concurrent_lookups))
         )
+        # Candidate verification materializes ItemSnapshot objects in Python RAM.
+        # Keep similarity evaluation serialized on the small Render instance so
+        # several hash misses cannot accumulate large candidate lists concurrently.
+        self.similarity_sem = asyncio.Semaphore(1)
         # Share only currently-running lookups for the same source media. This is
         # an in-flight singleflight map, not a persistent/result cache, so RAM is
         # released as soon as the request completes.
@@ -512,12 +516,13 @@ class LookupService:
                 item = None
                 confidence = 0.0
                 if collections:
-                    item, confidence = await self._match_similarity(
-                        media_hash,
-                        media.media_type,
-                        collections,
-                        global_mode=False,
-                    )
+                    async with self.similarity_sem:
+                        item, confidence = await self._match_similarity(
+                            media_hash,
+                            media.media_type,
+                            collections,
+                            global_mode=False,
+                        )
                 reason = "photo_multihash" if media.media_type == "photo" else "video_multiframe"
                 if item:
                     hit = True
@@ -526,12 +531,13 @@ class LookupService:
 
                 # 7) Global similarity hash fallback. This stage is mandatory
                 # after source-scoped hash/similarity misses for BOTH Auto and Manual.
-                item, confidence = await self._match_similarity(
-                    media_hash,
-                    media.media_type,
-                    None,
-                    global_mode=True,
-                )
+                async with self.similarity_sem:
+                    item, confidence = await self._match_similarity(
+                        media_hash,
+                        media.media_type,
+                        None,
+                        global_mode=True,
+                    )
                 if item:
                     hit = True
                     self._cache_exact(item, file_uid, filter_tag)
