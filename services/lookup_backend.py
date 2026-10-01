@@ -59,9 +59,10 @@ class LookupBackend:
             )
 
         for collection in preferred:
-            item = await snapshot.exact_uids(values, [collection])
-            if item:
-                return item
+            for uid in values:
+                item = snapshot.exact_uid(uid, [collection])
+                if item:
+                    return item
         return await mongo_exact_lookup.global_exact_uids(
             values,
             preferred_collection=preferred[0] if preferred else "items_character_catcher",
