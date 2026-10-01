@@ -415,11 +415,11 @@ class SQLiteFingerprintIndex:
                                 continue
                             batch.append(item)
                             if len(batch) >= max(1, settings.sqlite_batch_size):
-                                await self.upsert_items(batch)
+                                await self.bulk_load_items(batch)
                                 total += len(batch)
                                 batch.clear()
                         if batch:
-                            await self.upsert_items(batch)
+                            await self.bulk_load_items(batch)
                             total += len(batch)
                     except asyncio.CancelledError:
                         raise
@@ -446,11 +446,11 @@ class SQLiteFingerprintIndex:
                                     continue
                                 batch.append(item)
                                 if len(batch) >= max(1, settings.sqlite_batch_size):
-                                    await self.upsert_items(batch)
+                                    await self.bulk_load_items(batch)
                                     total += len(batch)
                                     batch.clear()
                             if batch:
-                                await self.upsert_items(batch)
+                                await self.bulk_load_items(batch)
                                 total += len(batch)
                         except asyncio.CancelledError:
                             raise
@@ -470,11 +470,11 @@ class SQLiteFingerprintIndex:
                                     continue
                                 batch.append(item)
                                 if len(batch) >= max(1, settings.sqlite_batch_size):
-                                    await self.upsert_items(batch)
+                                    await self.bulk_load_items(batch)
                                     total += len(batch)
                                     batch.clear()
                             if batch:
-                                await self.upsert_items(batch)
+                                await self.bulk_load_items(batch)
                                 total += len(batch)
                         except asyncio.CancelledError:
                             raise
@@ -501,6 +501,84 @@ class SQLiteFingerprintIndex:
                 return total
             finally:
                 self.building = False
+
+    async def bulk_load_items(self, items: list[ItemSnapshot]) -> None:
+        """Fast path for a clean/full build: write each table with executemany."""
+        if not items:
+            return
+        await self.open()
+        assert self.db is not None
+
+        fp_rows: list[tuple[Any, ...]] = []
+        exact_rows: list[tuple[Any, ...]] = []
+        chunk_rows: list[tuple[Any, ...]] = []
+        now = datetime.now(timezone.utc).isoformat()
+        for item in items:
+            bucket = int(round(item.duration_ms / 1000)) if item.duration_ms > 0 else 0
+            fp_rows.append((
+                item.collection,
+                item.mongo_id,
+                item.media_type or "",
+                item.phash,
+                item.dhash,
+                bucket,
+                now,
+                self._item_to_json(item),
+            ))
+            for key_type, values in (
+                ("uid", item.all_uids),
+                ("sha", item.all_shas),
+                ("pixel_sha", (item.pixel_sha256,) if item.pixel_sha256 else ()),
+                ("video_signature", (item.video_signature,) if item.video_signature else ()),
+            ):
+                for value in values:
+                    if value:
+                        exact_rows.append((item.collection, key_type, str(value), item.mongo_id))
+            if item.origin_chat_id is not None and item.origin_message_id is not None:
+                exact_rows.append((
+                    item.collection,
+                    "origin",
+                    f"{item.origin_chat_id}:{item.origin_message_id}",
+                    item.mongo_id,
+                ))
+            for field_name, value in (("phash", item.phash), ("dhash", item.dhash)):
+                if not value:
+                    continue
+                for count in HashChunkIndex.COUNTS:
+                    chunks = HashChunkIndex._chunks(value, count)
+                    if not chunks:
+                        continue
+                    for position, chunk in enumerate(chunks):
+                        chunk_rows.append((
+                            item.collection,
+                            field_name,
+                            count,
+                            position,
+                            str(chunk),
+                            item.mongo_id,
+                        ))
+
+        async with self._write_lock:
+            await self.db.executemany(
+                "INSERT OR REPLACE INTO fingerprint_items("
+                "collection,mongo_id,media_type,phash,dhash,duration_bucket,updated_at,item_json"
+                ") VALUES(?,?,?,?,?,?,?,?)",
+                fp_rows,
+            )
+            if exact_rows:
+                await self.db.executemany(
+                    "INSERT OR REPLACE INTO exact_keys(collection,key_type,key_value,mongo_id) "
+                    "VALUES(?,?,?,?)",
+                    exact_rows,
+                )
+            if chunk_rows:
+                await self.db.executemany(
+                    "INSERT OR REPLACE INTO hash_chunks("
+                    "collection,field,chunk_count,position,chunk_value,mongo_id"
+                    ") VALUES(?,?,?,?,?,?)",
+                    chunk_rows,
+                )
+            await self.db.commit()
 
     async def upsert_items(self, items: list[ItemSnapshot]) -> None:
         if not items:
