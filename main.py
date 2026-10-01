@@ -55,6 +55,9 @@ def setup_logging() -> None:
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+    # Telegram/aiogram can emit one INFO line for every unrelated update.
+    # On Render this stdout volume adds avoidable event-loop and log I/O pressure.
+    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 
 def build_dispatcher() -> Dispatcher:
