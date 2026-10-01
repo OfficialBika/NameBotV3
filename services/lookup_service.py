@@ -104,8 +104,53 @@ class LookupService:
         )
         self.download_sem = asyncio.Semaphore(settings.max_concurrent_downloads)
         self.lookup_sem = asyncio.Semaphore(settings.max_concurrent_lookups)
+        # Share only currently-running lookups for the same source media. This is
+        # an in-flight singleflight map, not a persistent/result cache, so RAM is
+        # released as soon as the request completes.
+        self._inflight: dict[str, asyncio.Task[LookupResult]] = {}
+
+    @staticmethod
+    def _inflight_key(message: Message) -> str | None:
+        media = extract_media(message)
+        if not media:
+            return None
+        source = media.source_message
+        uids = _telegram_uids(source, media)
+        origin = source_origin_key(source)
+        if origin:
+            identity = f"origin:{origin[0]}:{origin[1]}"
+        else:
+            identity = f"chat:{getattr(source, 'chat', None).id if getattr(source, 'chat', None) else ''}:msg:{getattr(source, 'message_id', None)}"
+        uid_part = ",".join(uids)
+        file_id = str(getattr(media.obj, "file_id", "") or "").strip()
+        return f"{identity}|{media.media_type}|uids:{uid_part}|fid:{file_id}"
 
     async def lookup_message(self, bot: Bot, message: Message, *, manual: bool = False) -> LookupResult:
+        key = self._inflight_key(message)
+        if key:
+            existing = self._inflight.get(key)
+            if existing is not None:
+                log.info(
+                    "LOOKUP SINGLEFLIGHT join message=%s key=%s",
+                    getattr(message, "message_id", None),
+                    key,
+                )
+                return await asyncio.shield(existing)
+
+            task = asyncio.create_task(
+                self._lookup_message_impl(bot, message, manual=manual),
+                name=f"lookup:{key}",
+            )
+            self._inflight[key] = task
+            try:
+                return await asyncio.shield(task)
+            finally:
+                if self._inflight.get(key) is task:
+                    self._inflight.pop(key, None)
+
+        return await self._lookup_message_impl(bot, message, manual=manual)
+
+    async def _lookup_message_impl(self, bot: Bot, message: Message, *, manual: bool = False) -> LookupResult:
         started = time.perf_counter()
         hit = False
         error = False
