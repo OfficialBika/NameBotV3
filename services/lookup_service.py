@@ -98,11 +98,9 @@ class LookupService:
     """V3 source-aware, alias-aware, multi-fingerprint lookup engine."""
 
     def __init__(self) -> None:
-        self.result_cache: TTLCache[str, ItemSnapshot] = TTLCache(
+        # RAM L1 stores only Telegram UID -> character name.
+        self.uid_name_cache: TTLCache[str, str] = TTLCache(
             settings.result_cache_max_items, settings.result_cache_ttl_seconds
-        )
-        self.miss_cache: TTLCache[str, bool] = TTLCache(
-            settings.result_cache_max_items, settings.miss_cache_ttl_seconds
         )
         self.download_sem = asyncio.Semaphore(settings.max_concurrent_downloads)
         self.lookup_sem = asyncio.Semaphore(settings.max_concurrent_lookups)
@@ -155,14 +153,27 @@ class LookupService:
                 # Telegram identity stored by Adding-Helperbot.
                 if file_uids:
                     if collections:
-                        cached_item = None
+                        cached_name = None
+                        cached_uid = ""
                         for candidate_uid in file_uids:
-                            cached = self.result_cache.get(f"uid:{filter_tag}:{candidate_uid}")
+                            cached = self.uid_name_cache.get(f"uid:{filter_tag}:{candidate_uid}")
                             if cached:
-                                cached_item = cached
+                                cached_name = cached
+                                cached_uid = candidate_uid
                                 break
-                        if cached_item:
+                        if cached_name:
                             hit = True
+                            cached_collection = (
+                                collections[0]
+                                if len(collections) == 1
+                                else (scope.source_collection or collections[0])
+                            )
+                            cached_item = ItemSnapshot(
+                                mongo_id="",
+                                collection=cached_collection,
+                                command=output_command or scope.command or settings.default_command,
+                                name=cached_name,
+                            )
                             return self._done(
                                 self._with_command(cached_item, output_command, source_message),
                                 "uid_cache",
@@ -174,7 +185,10 @@ class LookupService:
                         if item:
                             hit = True
                             for candidate_uid in file_uids:
-                                self.result_cache.set(f"uid:{filter_tag}:{candidate_uid}", item)
+                                self.uid_name_cache.set(
+                                    f"uid:{filter_tag}:{candidate_uid}",
+                                    item.name,
+                                )
                             log.info(
                                 "UID DEBUG source_match message=%s source=%s name=%s uids=%s",
                                 getattr(message, "message_id", None),
@@ -192,27 +206,8 @@ class LookupService:
                     # 2) Global exact Telegram UID. This is the explicit fallback
                     # after source-scoped miss and uses the canonical unified Mongo
                     # characters collection without a source_key restriction.
-                    global_cached = None
-                    for candidate_uid in file_uids:
-                        global_cached = self.result_cache.get(f"uid:all:{candidate_uid}")
-                        if global_cached:
-                            break
-                    if global_cached:
-                        hit = True
-                        log.info(
-                            "UID DEBUG global_cache_match message=%s source=%s name=%s uids=%s",
-                            getattr(message, "message_id", None),
-                            global_cached.collection,
-                            global_cached.name,
-                            file_uids,
-                        )
-                        return self._done(
-                            self._with_command(global_cached, output_command, source_message),
-                            "uid_global_cache",
-                            started,
-                            1.0,
-                        )
-
+                    # Global exact UID is intentionally not cached in RAM.
+                    # SQLite remains the fast disk-backed L2 path.
                     item = await lookup_backend.global_exact_uids(
                         file_uids,
                         preferred_collection="items_character_catcher",
@@ -221,7 +216,6 @@ class LookupService:
                     if item:
                         hit = True
                         for candidate_uid in file_uids:
-                            self.result_cache.set(f"uid:all:{candidate_uid}", item)
                         log.info(
                             "UID DEBUG global_exact_recovery message=%s source=%s name=%s uids=%s",
                             getattr(message, "message_id", None),
@@ -257,7 +251,10 @@ class LookupService:
                         if file_item:
                             hit = True
                             for candidate_uid in file_uids:
-                                self.result_cache.set(f"uid:{filter_tag}:{candidate_uid}", file_item)
+                                self.uid_name_cache.set(
+                                    f"uid:{filter_tag}:{candidate_uid}",
+                                    file_item.name,
+                                )
                             log.info(
                                 "FILE_ID DEBUG source_match message=%s source=%s name=%s file_ids=%s",
                                 getattr(message, "message_id", None),
@@ -299,8 +296,10 @@ class LookupService:
                         if compat:
                             hit = True
                             for candidate_uid in file_uids:
-                                self.result_cache.set(f"uid:{filter_tag}:{candidate_uid}", compat)
-                                self.result_cache.set(f"uid:all:{candidate_uid}", compat)
+                                self.uid_name_cache.set(
+                                    f"uid:{filter_tag}:{candidate_uid}",
+                                    compat.name,
+                                )
                             log.info(
                                 "Catch compatibility recovery message=%s source=%s name=%s "
                                 "character_id=%s file_ids=%s",
@@ -363,13 +362,6 @@ class LookupService:
                     bool(media_hash.dhash),
                     len(data),
                 )
-                sha_cache_key = f"sha:{filter_tag}:{media_hash.sha256 or ''}"
-                if media_hash.sha256:
-                    cached = self.result_cache.get(sha_cache_key)
-                    if cached:
-                        hit = True
-                        return self._done(self._with_command(cached, output_command, source_message), "sha_cache", started, 1.0)
-
                 # 3) Hash fallback: source-scoped exact hash first, then global
                 # exact hash. This stage runs for BOTH Auto and Manual lookup.
                 log.info(
@@ -387,7 +379,7 @@ class LookupService:
                         reason = "sha_global"
                     if item:
                         hit = True
-                        self._cache_exact(item, file_uid, sha_cache_key)
+                        self._cache_exact(item, file_uid, filter_tag)
                         return self._done(
                             self._with_command(
                                 item,
@@ -421,7 +413,7 @@ class LookupService:
                         reason = "pixel_sha_global"
                     if item:
                         hit = True
-                        self._cache_exact(item, file_uid, sha_cache_key)
+                        self._cache_exact(item, file_uid, filter_tag)
                         return self._done(
                             self._with_command(
                                 item,
@@ -450,7 +442,7 @@ class LookupService:
                         reason = "video_signature_global"
                     if item:
                         hit = True
-                        self._cache_exact(item, file_uid, sha_cache_key)
+                        self._cache_exact(item, file_uid, filter_tag)
                         return self._done(
                             self._with_command(
                                 item,
@@ -483,7 +475,7 @@ class LookupService:
                 reason = "photo_multihash" if media.media_type == "photo" else "video_multiframe"
                 if item:
                     hit = True
-                    self._cache_exact(item, file_uid, sha_cache_key)
+                    self._cache_exact(item, file_uid, filter_tag)
                     return self._done(self._with_command(item, output_command, source_message), reason, started, confidence)
 
                 # 7) Global similarity hash fallback. This stage is mandatory
@@ -496,7 +488,7 @@ class LookupService:
                 )
                 if item:
                     hit = True
-                    self._cache_exact(item, file_uid, sha_cache_key)
+                    self._cache_exact(item, file_uid, filter_tag)
                     return self._done(
                         self._with_command(
                             item,
@@ -526,8 +518,6 @@ class LookupService:
                             1.0,
                         )
 
-                miss_key = f"miss:{filter_tag}:{media.media_type}:{media_hash.sha256 or file_uid}"
-                self.miss_cache.set(miss_key, True)
                 return self._done(None, "not_found", started)
         except Exception:
             error = True
@@ -558,18 +548,20 @@ class LookupService:
                 return None
 
     def invalidate_lookup_cache(self) -> None:
-        self.result_cache.clear()
-        self.miss_cache.clear()
+        self.uid_name_cache.clear()
 
     @staticmethod
     def _filter_tag(collections: list[str] | None) -> str:
         return "+".join(collections) if collections else "all"
 
-    def _cache_exact(self, item: ItemSnapshot, file_uid: str, sha_cache_key: str) -> None:
-        if file_uid:
-            self.result_cache.set(f"uid:all:{file_uid}", item)
-        if sha_cache_key:
-            self.result_cache.set(sha_cache_key, item)
+    def _cache_exact(self, item: ItemSnapshot, file_uid: str, cache_scope: str) -> None:
+        # Positive L1 only: UID -> name. Never retain ItemSnapshot, SHA, miss,
+        # or global/unscoped entries in process memory.
+        if file_uid and cache_scope and cache_scope != "all" and item.name:
+            self.uid_name_cache.set(
+                f"uid:{cache_scope}:{file_uid}",
+                item.name,
+            )
 
     @staticmethod
     def _with_command(item: ItemSnapshot | None, output_command: str | None, source_message: Message) -> ItemSnapshot | None:
