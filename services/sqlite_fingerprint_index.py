@@ -863,12 +863,12 @@ class SQLiteFingerprintIndex:
             f"AND ({chunk_clauses})"
         )
         params: list[Any] = [field_name, count]
+        for position, chunk in enumerate(chunks):
+            params.extend([position, str(chunk)])
         if collections:
             collection_marks = ",".join("?" for _ in collections)
             sql += f" AND hc.collection IN ({collection_marks})"
             params.extend(collections)
-        for position, chunk in enumerate(chunks):
-            params.extend([position, str(chunk)])
         params.append(max(1, limit))
         cursor = await self.db.execute(sql, params)
         rows = await cursor.fetchall()
