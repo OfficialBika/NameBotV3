@@ -7,7 +7,12 @@ from typing import Any
 
 from config import COLLECTION_TO_OUTPUT_COMMAND, settings
 from database.mongo import get_db
-from services.snapshot_cache import ItemSnapshot, LOOKUP_PROJECTION, parse_item
+from services.snapshot_cache import (
+    ItemSnapshot,
+    LOOKUP_PROJECTION,
+    SQLITE_LOOKUP_PROJECTION,
+    parse_item,
+)
 from services.unified_adding_db import unified_adding_db
 
 log = logging.getLogger(__name__)
@@ -814,7 +819,7 @@ class MongoExactLookup:
                 )
                 cursor = unified_adding_db.collection().find(
                     scoped_target,
-                    projection=LOOKUP_PROJECTION,
+                    projection=SQLITE_LOOKUP_PROJECTION,
                 ).limit(max_candidates)
                 out = await parse_unified(cursor)
 
@@ -826,7 +831,7 @@ class MongoExactLookup:
                     )
                     legacy_cursor = unified_adding_db.collection().find(
                         scoped_legacy,
-                        projection=LOOKUP_PROJECTION,
+                        projection=SQLITE_LOOKUP_PROJECTION,
                     ).limit(remaining)
                     for item in await parse_unified(legacy_cursor):
                         if not any(existing.mongo_id == item.mongo_id for existing in out):
@@ -859,7 +864,7 @@ class MongoExactLookup:
             try:
                 cursor = get_db()[collection].find(
                     targeted_query,
-                    projection=LOOKUP_PROJECTION,
+                    projection=SQLITE_LOOKUP_PROJECTION,
                 ).limit(per_collection)
                 current = await parse_legacy(collection, cursor)
                 out.extend(current)
@@ -868,7 +873,7 @@ class MongoExactLookup:
                     remaining = per_collection - len(current)
                     legacy_cursor = get_db()[collection].find(
                         legacy_query,
-                        projection=LOOKUP_PROJECTION,
+                        projection=SQLITE_LOOKUP_PROJECTION,
                     ).limit(remaining)
                     for item in await parse_legacy(collection, legacy_cursor):
                         if not any(existing.mongo_id == item.mongo_id for existing in out):
@@ -918,7 +923,7 @@ class MongoExactLookup:
             try:
                 cursor = unified_adding_db.collection().find(
                     unified_adding_db.scoped_query(query, selected if collections else None),
-                    projection=LOOKUP_PROJECTION,
+                    projection=SQLITE_LOOKUP_PROJECTION,
                 ).limit(max_candidates)
                 async for doc in cursor:
                     source = unified_adding_db.source_key(doc)
@@ -940,7 +945,7 @@ class MongoExactLookup:
             try:
                 cursor = get_db()[collection].find(
                     query,
-                    projection=LOOKUP_PROJECTION,
+                    projection=SQLITE_LOOKUP_PROJECTION,
                 ).limit(per_collection)
                 default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
                 async for doc in cursor:
