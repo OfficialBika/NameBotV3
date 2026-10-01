@@ -229,7 +229,7 @@ class UnifiedAddingDB:
 
     async def _log_schema_state(self) -> None:
         """Log the canonical collection/index state for deployment diagnostics."""
-        if not self._db:
+        if self._db is None:
             return
         try:
             collection = self._db[self.collection_name]
