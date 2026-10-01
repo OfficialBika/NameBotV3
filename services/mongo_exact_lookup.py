@@ -737,11 +737,13 @@ class MongoExactLookup:
                             if len(out) >= max_candidates:
                                 break
 
-                log.debug(
-                    "Mongo photo candidates unified stage=%s sources=%s count=%s",
+                log.info(
+                    "HASH DEBUG mongo_photo_query stage=%s sources=%s candidates=%s phash=%s dhash=%s",
                     "chunked" if has_targeted_hash else "legacy",
                     selected if collections else "global",
                     len(out),
+                    bool(phash),
+                    bool(dhash),
                 )
                 return out
             except asyncio.CancelledError:
