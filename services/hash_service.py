@@ -46,6 +46,18 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def sha256_file(path: str, chunk_size: int = 1024 * 1024) -> str:
+    """Hash a downloaded media file without loading the whole file into RAM."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def hamming_hex(a: str | None, b: str | None) -> int | None:
     if not a or not b:
         return None
@@ -113,6 +125,40 @@ def hash_photo(data: bytes) -> MediaHash:
         return MediaHash(sha256=digest)
 
 
+def hash_photo_file(path: str, digest: str | None = None) -> MediaHash:
+    """Compute the live photo fingerprint directly from a disk file."""
+    digest = digest or sha256_file(path)
+    try:
+        with Image.open(path) as opened:
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+        try:
+            width, height = image.size
+            pixel_hasher = hashlib.sha256()
+            pixel_hasher.update(width.to_bytes(4, "big"))
+            pixel_hasher.update(height.to_bytes(4, "big"))
+            pixel_hasher.update(image.tobytes())
+            pixel_sha = pixel_hasher.hexdigest()
+            return MediaHash(
+                sha256=digest,
+                pixel_sha256=pixel_sha,
+                phash=str(imagehash.phash(image)),
+                phash_large=str(imagehash.phash(image, hash_size=16)),
+                dhash=str(imagehash.dhash(image)),
+                whash=None,
+                colorhash=None,
+                crop_hash=None,
+                width=width,
+                height=height,
+            )
+        finally:
+            try:
+                image.close()
+            except Exception:
+                pass
+    except Exception:
+        return MediaHash(sha256=digest)
+
+
 def _frame_bundle(frame) -> tuple[str, str]:
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     image = Image.fromarray(rgb)
@@ -127,6 +173,56 @@ def _read_sample(cap, frame_count: int, position: float) -> VideoSampleHash | No
         return None
     phash, dhash = _frame_bundle(frame)
     return VideoSampleHash(round(float(position), 4), index, phash, dhash)
+
+
+def hash_video_file(path: str, digest: str | None = None) -> MediaHash:
+    """Compute video fingerprints from a disk file without retaining full media bytes."""
+    digest = digest or sha256_file(path)
+    cap = None
+    try:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return MediaHash(sha256=digest)
+
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        if frame_count <= 0:
+            return MediaHash(sha256=digest, fps=fps, width=width, height=height)
+
+        legacy: list[str] = []
+        for position in settings.video_sample_points:
+            sample = _read_sample(cap, frame_count, position)
+            if sample:
+                legacy.append(sample.phash)
+
+        samples: list[VideoSampleHash] = []
+        for position in settings.video_v3_sample_points:
+            sample = _read_sample(cap, frame_count, position)
+            if sample:
+                samples.append(sample)
+
+        material = "|".join(
+            f"{sample.position}:{sample.phash}:{sample.dhash}" for sample in samples
+        ).encode("utf-8")
+        signature = hashlib.sha256(material).hexdigest() if material else None
+        return MediaHash(
+            sha256=digest,
+            frame_hashes=tuple(legacy),
+            video_samples=tuple(samples),
+            video_signature=signature,
+            duration_ms=int(round((frame_count / fps) * 1000)) if fps > 0 else 0,
+            fps=round(fps, 6),
+            frame_count=frame_count,
+            width=width,
+            height=height,
+        )
+    except Exception:
+        return MediaHash(sha256=digest)
+    finally:
+        if cap is not None:
+            cap.release()
 
 
 def hash_video(data: bytes) -> MediaHash:
