@@ -148,75 +148,59 @@ class LookupService:
                     file_uids,
                 )
 
-                # 1) Source-scoped Telegram UID first. Query every PhotoSize UID
-                # together so a single Mongo/SQLite round trip can recover any exact
-                # Telegram identity stored by Adding-Helperbot.
+                # 1) Fast exact Telegram UID lookup.
+                # Query the local/global index once and prefer the detected source.
+                # This replaces the old source-scope -> global waterfall while
+                # preserving source preference and global fallback.
                 if file_uids:
+                    cached_name = None
                     if collections:
-                        cached_name = None
-                        cached_uid = ""
                         for candidate_uid in file_uids:
                             cached = self.uid_name_cache.get(f"uid:{filter_tag}:{candidate_uid}")
                             if cached:
                                 cached_name = cached
-                                cached_uid = candidate_uid
                                 break
-                        if cached_name:
-                            hit = True
-                            cached_collection = (
-                                collections[0]
-                                if len(collections) == 1
-                                else (scope.source_collection or collections[0])
-                            )
-                            cached_item = ItemSnapshot(
-                                mongo_id="",
-                                collection=cached_collection,
-                                command=output_command or scope.command or settings.default_command,
-                                name=cached_name,
-                            )
-                            return self._done(
-                                self._with_command(cached_item, output_command, source_message),
-                                "uid_cache",
-                                started,
-                                1.0,
-                            )
+                    if cached_name:
+                        hit = True
+                        cached_collection = (
+                            collections[0]
+                            if len(collections) == 1
+                            else (scope.source_collection or collections[0])
+                        )
+                        cached_item = ItemSnapshot(
+                            mongo_id="",
+                            collection=cached_collection,
+                            command=output_command or scope.command or settings.default_command,
+                            name=cached_name,
+                        )
+                        return self._done(
+                            self._with_command(cached_item, output_command, source_message),
+                            "uid_cache",
+                            started,
+                            1.0,
+                        )
 
-                        item = await lookup_backend.exact_uids(file_uids, collections)
-                        if item:
-                            hit = True
+                    item = await lookup_backend.fast_exact_uids(
+                        file_uids,
+                        preferred_collections=collections,
+                    )
+                    if item:
+                        hit = True
+                        # Only cache a hit in the detected source scope. Global
+                        # fallback results stay uncached to avoid cross-source RAM
+                        # identity collisions.
+                        if collections and item.collection in collections:
                             for candidate_uid in file_uids:
                                 self.uid_name_cache.set(
                                     f"uid:{filter_tag}:{candidate_uid}",
                                     item.name,
                                 )
-                            log.info(
-                                "UID DEBUG source_match message=%s source=%s name=%s uids=%s",
-                                getattr(message, "message_id", None),
-                                item.collection,
-                                item.name,
-                                file_uids,
-                            )
-                            return self._done(
-                                self._with_command(item, output_command, source_message),
-                                "uid",
-                                started,
-                                1.0,
-                            )
-
-                    # 2) Global exact Telegram UID. This is the explicit fallback
-                    # after source-scoped miss and uses the canonical unified Mongo
-                    # characters collection without a source_key restriction.
-                    # Global exact UID is intentionally not cached in RAM.
-                    # SQLite remains the fast disk-backed L2 path.
-                    item = await lookup_backend.global_exact_uids(
-                        file_uids,
-                        preferred_collection="items_character_catcher",
-                        preferred_collections=collections,
-                    )
-                    if item:
-                        hit = True
+                            reason = "uid"
+                        else:
+                            reason = "uid_global"
                         log.info(
-                            "UID DEBUG global_exact_recovery message=%s source=%s name=%s uids=%s",
+                            "UID DEBUG exact_hit reason=%s message=%s source=%s name=%s uids=%s",
+                            reason,
                             getattr(message, "message_id", None),
                             item.collection,
                             item.name,
@@ -228,13 +212,13 @@ class LookupService:
                                 output_command_from_message(source_message, item.collection),
                                 source_message,
                             ),
-                            "uid_global",
+                            reason,
                             started,
                             1.0,
                         )
 
-                    log.warning(
-                        "UID DEBUG source_and_global_miss message=%s requested_sources=%s uids=%s",
+                    log.info(
+                        "UID DEBUG exact_miss message=%s requested_sources=%s uids=%s",
                         getattr(message, "message_id", None),
                         collections,
                         file_uids,
