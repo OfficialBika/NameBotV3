@@ -89,14 +89,17 @@ def hash_photo(data: bytes) -> MediaHash:
             return MediaHash(
                 sha256=digest,
                 pixel_sha256=pixel_sha,
+                # Keep the live lookup fingerprint CPU/RAM bounded. pHash, large-pHash
+                # and dHash are the indexed structural signals used for candidate search
+                # and verification. Full-resolution wHash/colorHash can allocate/scan
+                # very large arrays for high-resolution Telegram media, so they remain
+                # stored/compatible in Mongo but are intentionally omitted from live
+                # request computation.
                 phash=str(imagehash.phash(image)),
                 phash_large=str(imagehash.phash(image, hash_size=16)),
                 dhash=str(imagehash.dhash(image)),
-                whash=str(imagehash.whash(image)),
-                colorhash=str(imagehash.colorhash(image)),
-                # crop_resistant_hash is retained in stored DB records for compatibility,
-                # but the lookup verifier does not use it. Avoid computing this expensive
-                # fingerprint on every live lookup request.
+                whash=None,
+                colorhash=None,
                 crop_hash=None,
                 width=width,
                 height=height,
