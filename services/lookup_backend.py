@@ -31,6 +31,43 @@ class LookupBackend:
         item = snapshot.exact_origin(key, collections)
         return item or await mongo_exact_lookup.exact_origin(key, collections)
 
+    async def fast_exact_uids(
+        self,
+        uids: list[str] | tuple[str, ...],
+        preferred_collections: list[str] | None = None,
+    ) -> ItemSnapshot | None:
+        """Single global exact UID lookup with source preference.
+
+        Avoid the old source-query -> global-query waterfall. A single indexed
+        SQLite/Mongo lookup can return a preferred source when available and
+        otherwise falls back to the unique global match.
+        """
+        values = list(uids)
+        preferred = list(preferred_collections or [])
+        if self.mode == "sqlite":
+            item = await sqlite_index.exact_uids(
+                values,
+                collections=None,
+                preferred_collections=preferred,
+            )
+            if item:
+                return item
+            return await mongo_exact_lookup.global_exact_uids(
+                values,
+                preferred_collection=preferred[0] if preferred else "items_character_catcher",
+                preferred_collections=preferred,
+            )
+
+        for collection in preferred:
+            item = await snapshot.exact_uids(values, [collection])
+            if item:
+                return item
+        return await mongo_exact_lookup.global_exact_uids(
+            values,
+            preferred_collection=preferred[0] if preferred else "items_character_catcher",
+            preferred_collections=preferred,
+        )
+
     async def exact_uids(self, uids: list[str] | tuple[str, ...], collections: list[str] | None = None) -> ItemSnapshot | None:
         if self.mode == "sqlite":
             # One local SQL lookup for all PhotoSize UIDs. Mongo is the authoritative
