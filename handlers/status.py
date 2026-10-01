@@ -104,6 +104,26 @@ async def _ping_bot(message: Message) -> float | None:
         return None
 
 
+def _process_ram_info() -> tuple[str, str]:
+    try:
+        rss = 0
+        hwm = 0
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        rss = int(parts[1]) * 1024
+                elif line.startswith("VmHWM:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        hwm = int(parts[1]) * 1024
+        fmt = lambda value: f"{value / (1024 ** 2):.1f} MB"
+        return fmt(rss), fmt(hwm)
+    except Exception:
+        return "N/A", "N/A"
+
+
 def _ram_info() -> tuple[str, str, str]:
     try:
         data: dict[str, int] = {}
@@ -173,6 +193,7 @@ async def build_stats_text(message: Message) -> str:
     db_ping = await _ping_db()
     bot_ping = await _ping_bot(message)
     used, left, total = _ram_info()
+    process_rss, process_hwm = _process_ram_info()
     p = perf.snapshot()
     engine = await lookup_backend.stats()
     engine_text = "\n".join(_engine_lines(engine))
@@ -183,10 +204,13 @@ async def build_stats_text(message: Message) -> str:
         f"‣ Bot Ping : {_fmt_ms(bot_ping)}\n"
         f"‣ RAM Used : {used}\n"
         f"‣ RAM Left : {left}\n"
-        f"‣ RAM Total : {total}\n\n"
+        f"‣ RAM Total : {total}\n"
+        f"‣ Process RSS : {process_rss}\n"
+        f"‣ Process HWM : {process_hwm}\n\n"
         "⚡ LOOKUP ENGINE V3.1\n"
         f"{engine_text}\n"
         f"‣ UID L1 Cache : {len(lookup_service.uid_name_cache)}\n"
+        f"‣ In-flight Lookups : {len(lookup_service._inflight)}\n"
         f"‣ Lookup Hits : {_fmt_int(int(p.get('lookup_hits', 0)))}\n"
         f"‣ Lookup Misses : {_fmt_int(int(p.get('lookup_misses', 0)))}\n"
         f"‣ EMA latency : {float(p.get('lookup_ema_ms', 0)):.0f} ms"
