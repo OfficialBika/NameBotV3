@@ -271,8 +271,11 @@ class LookupService:
                     if catch_lookup:
                         catch_character_id = _catch_character_id(source_message)
                         catch_file_ids = _telegram_file_ids(source_message, media)
+                        # UID was already checked globally just above. Re-querying
+                        # UID fields inside Catch compatibility only adds Mongo round trips.
+                        # Keep this legacy path for file_id / numeric Catch-ID recovery.
                         compat = await lookup_backend.catch_exact_compat(
-                            uids=file_uids,
+                            uids=(),
                             file_ids=catch_file_ids,
                             character_id=catch_character_id,
                         )
