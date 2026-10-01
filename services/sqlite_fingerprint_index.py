@@ -42,6 +42,7 @@ class SQLiteFingerprintIndex:
 
     def __init__(self) -> None:
         self.db: aiosqlite.Connection | None = None
+        self.read_db: aiosqlite.Connection | None = None
         self.path = settings.sqlite_index_path
         self.ready = False
         # Exact-key lookups can safely use a clean, partially rebuilt index.
@@ -123,6 +124,18 @@ class SQLiteFingerprintIndex:
             """
         )
         await self.db.commit()
+        # Dedicated read connection keeps lookup latency independent from the
+        # long-running full-index writer transaction. SQLite WAL allows readers
+        # to continue against the last committed snapshot while the builder writes.
+        if self.read_db is None:
+            self.read_db = await aiosqlite.connect(str(path))
+            self.read_db.row_factory = aiosqlite.Row
+            await self.read_db.execute("PRAGMA journal_mode=WAL")
+            await self.read_db.execute("PRAGMA synchronous=NORMAL")
+            await self.read_db.execute("PRAGMA cache_size=-2048")
+            await self.read_db.execute("PRAGMA mmap_size=0")
+            await self.read_db.execute("PRAGMA temp_store=MEMORY")
+            await self.read_db.execute(f"PRAGMA busy_timeout={max(100, settings.sqlite_busy_timeout_ms)}")
         self.opened_at = time.time()
         self.last_sync_at = await self._load_watermark()
         count = await self.count()
@@ -141,16 +154,20 @@ class SQLiteFingerprintIndex:
         )
 
     async def close(self) -> None:
+        if self.read_db is not None:
+            await self.read_db.close()
         if self.db is not None:
             await self.db.close()
+        self.read_db = None
         self.db = None
         self.ready = False
         self.exact_ready = False
 
     async def _load_watermark(self) -> datetime | None:
-        if self.db is None:
+        conn = self.read_db or self.db
+        if conn is None:
             return None
-        cursor = await self.db.execute("SELECT value FROM index_meta WHERE key='last_sync_at'")
+        cursor = await conn.execute("SELECT value FROM index_meta WHERE key='last_sync_at'")
         row = await cursor.fetchone()
         await cursor.close()
         if not row:
@@ -162,9 +179,10 @@ class SQLiteFingerprintIndex:
             return None
 
     async def _schema_version(self) -> str | None:
-        if self.db is None:
+        conn = self.read_db or self.db
+        if conn is None:
             return None
-        cursor = await self.db.execute("SELECT value FROM index_meta WHERE key='schema_version'")
+        cursor = await conn.execute("SELECT value FROM index_meta WHERE key='schema_version'")
         row = await cursor.fetchone()
         await cursor.close()
         return str(row[0]) if row else None
@@ -222,17 +240,19 @@ class SQLiteFingerprintIndex:
             return None
 
     async def count(self) -> int:
-        if self.db is None:
+        conn = self.read_db or self.db
+        if conn is None:
             return 0
-        cursor = await self.db.execute("SELECT COUNT(*) FROM fingerprint_items")
+        cursor = await conn.execute("SELECT COUNT(*) FROM fingerprint_items")
         row = await cursor.fetchone()
         await cursor.close()
         return int(row[0] if row else 0)
 
     async def stats(self) -> dict[str, Any]:
-        if self.db is None:
+        conn = self.read_db or self.db
+        if conn is None:
             return {"ready": False, "building": self.building, "items": 0, "photos": 0, "videos": 0, "age_seconds": -1, "path": self.path}
-        cursor = await self.db.execute(
+        cursor = await conn.execute(
             "SELECT COUNT(*) AS total, "
             "SUM(CASE WHEN media_type='photo' THEN 1 ELSE 0 END) AS photos, "
             "SUM(CASE WHEN media_type='video' THEN 1 ELSE 0 END) AS videos "
@@ -658,7 +678,8 @@ class SQLiteFingerprintIndex:
 
     async def _exact_lookup(self, key_type: str, key_value: str,
                             collections: list[str] | None = None) -> ItemSnapshot | None:
-        if not self.exact_ready or self.db is None or not key_value:
+        conn = self.read_db or self.db
+        if not self.exact_ready or conn is None or not key_value:
             return None
         selected = list(collections) if collections else None
         if selected == []:
@@ -675,7 +696,7 @@ class SQLiteFingerprintIndex:
             sql += f" AND ek.collection IN ({marks})"
             params.extend(selected)
         sql += " LIMIT 1"
-        cursor = await self.db.execute(sql, params)
+        cursor = await conn.execute(sql, params)
         row = await cursor.fetchone()
         await cursor.close()
         return self._item_from_json(str(row["item_json"])) if row else None
@@ -692,7 +713,8 @@ class SQLiteFingerprintIndex:
         multiple sources contain the same UID, source preference is honored and
         ambiguous results are rejected rather than choosing randomly.
         """
-        if not self.exact_ready or self.db is None:
+        conn = self.read_db or self.db
+        if not self.exact_ready or conn is None:
             return None
         values = list(dict.fromkeys(
             str(uid or "").strip() for uid in uids if str(uid or "").strip()
@@ -718,7 +740,7 @@ class SQLiteFingerprintIndex:
             sql += f" AND ek.collection IN ({collection_marks})"
             params.extend(selected)
         sql += " LIMIT 100"
-        cursor = await self.db.execute(sql, params)
+        cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         await cursor.close()
         if not rows:
@@ -1041,7 +1063,8 @@ class SQLiteFingerprintIndex:
         dhash_threshold: int,
         max_candidates: int,
     ) -> list[ItemSnapshot]:
-        if self.db is None:
+        conn = self.read_db or self.db
+        if conn is None:
             return []
         selected = list(collections) if collections else None
         rows = await self._photo_rows_for_hash(
@@ -1062,7 +1085,7 @@ class SQLiteFingerprintIndex:
         # Match Snapshot Mode behavior for scoped legacy records when hash buckets return none.
         if not items and collections:
             marks = ",".join("?" for _ in selected)
-            cursor = await self.db.execute(
+            cursor = await conn.execute(
                 f"SELECT item_json FROM fingerprint_items WHERE collection IN ({marks}) "
                 "AND media_type='photo' LIMIT ?",
                 [*selected, max(1, max_candidates)],
@@ -1080,7 +1103,8 @@ class SQLiteFingerprintIndex:
         duration_ms: int,
         tolerance_seconds: int,
     ) -> list[ItemSnapshot]:
-        if self.db is None:
+        conn = self.read_db or self.db
+        if conn is None:
             return []
         selected = list(collections) if collections else None
         marks = ",".join("?" for _ in selected) if selected else ""
@@ -1102,13 +1126,13 @@ class SQLiteFingerprintIndex:
                 sql += f"collection IN ({marks}) AND "
             sql += "media_type='video' LIMIT ?"
             params.append(max(1, settings.video_max_candidates))
-        cursor = await self.db.execute(sql, params)
+        cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         await cursor.close()
 
         # Preserve V2 compatibility when duration metadata is absent/mismatched in a scoped search.
         if not rows and selected:
-            cursor = await self.db.execute(
+            cursor = await conn.execute(
                 f"SELECT item_json FROM fingerprint_items WHERE collection IN ({marks}) "
                 "AND media_type='video' LIMIT ?",
                 [*selected, max(1, settings.video_max_candidates)],
