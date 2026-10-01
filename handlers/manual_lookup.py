@@ -27,6 +27,10 @@ def _already_processed(message: Message) -> bool:
     key = f"{message.chat.id}:{message.message_id}"
     if key in _seen:
         return True
+    if len(_seen) >= 3000:
+        oldest = next(iter(_seen), None)
+        if oldest is not None:
+            _seen.pop(oldest, None)
     _seen[key] = now
     return False
 
