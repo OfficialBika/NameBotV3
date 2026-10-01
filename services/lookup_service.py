@@ -215,7 +215,6 @@ class LookupService:
                     )
                     if item:
                         hit = True
-                        for candidate_uid in file_uids:
                         log.info(
                             "UID DEBUG global_exact_recovery message=%s source=%s name=%s uids=%s",
                             getattr(message, "message_id", None),
