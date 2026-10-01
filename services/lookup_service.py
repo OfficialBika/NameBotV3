@@ -10,7 +10,15 @@ from aiogram import Bot
 from aiogram.types import Message
 
 from config import settings
-from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video, normalized_hamming
+from services.hash_service import (
+    MediaHash,
+    hamming_hex,
+    hash_photo,
+    hash_photo_basic,
+    hash_video,
+    normalized_hamming,
+    sha256_bytes,
+)
 from services.lookup_backend import lookup_backend
 from services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
@@ -214,23 +222,28 @@ class LookupService:
                 if not data:
                     return self._done(None, "download_failed", started)
 
-                media_hash = await asyncio.to_thread(hash_photo if media.media_type == "photo" else hash_video, data)
-                sha_cache_key = f"sha:{filter_tag}:{media_hash.sha256 or ''}"
-                if media_hash.sha256:
+                # Fastest exact path: raw file SHA is independent of media decoding.
+                # Do this before Pillow/OpenCV so unchanged media can return without
+                # calculating any perceptual hashes.
+                raw_sha = await asyncio.to_thread(sha256_bytes, data)
+                sha_cache_key = f"sha:{filter_tag}:{raw_sha}"
+                if raw_sha:
                     cached = self.result_cache.get(sha_cache_key)
                     if cached:
                         hit = True
-                        return self._done(self._with_command(cached, output_command, source_message), "sha_cache", started, 1.0)
+                        return self._done(
+                            self._with_command(cached, output_command, source_message),
+                            "sha_cache",
+                            started,
+                            1.0,
+                        )
 
-                # 3) Hash fallback: source-scoped exact hash first, then global
-                # exact hash. This stage runs for BOTH Auto and Manual lookup.
-                item = None
-                reason = "sha"
-                if media_hash.sha256:
+                    item = None
+                    reason = "sha"
                     if collections:
-                        item = await lookup_backend.exact_sha(media_hash.sha256, collections)
+                        item = await lookup_backend.exact_sha(raw_sha, collections)
                     if not item:
-                        item = await lookup_backend.exact_sha(media_hash.sha256, None)
+                        item = await lookup_backend.exact_sha(raw_sha, None)
                         reason = "sha_global"
                     if item:
                         hit = True
@@ -245,6 +258,22 @@ class LookupService:
                             started,
                             1.0,
                         )
+
+                # Second stage: photos need only canonical pixel SHA + pHash/dHash
+                # until exact pixel matching also misses. Video requires its sampled
+                # signature, so its full fingerprint is built here after raw SHA miss.
+                if media.media_type == "photo":
+                    media_hash = await asyncio.to_thread(
+                        hash_photo_basic,
+                        data,
+                        digest=raw_sha,
+                    )
+                else:
+                    media_hash = await asyncio.to_thread(
+                        hash_video,
+                        data,
+                        digest=raw_sha,
+                    )
 
                 # 4) Decoded canonical pixel hash exact match for photos.
                 if media.media_type == "photo" and media_hash.pixel_sha256:
@@ -303,6 +332,18 @@ class LookupService:
                             started,
                             1.0,
                         )
+
+                # Photos only reach similarity after both exact SHA stages miss.
+                # Build expensive perceptual hashes lazily and skip crop-resistant
+                # hashing because lookup verification never uses crop_hash.
+                if media.media_type == "photo":
+                    media_hash = await asyncio.to_thread(
+                        hash_photo,
+                        data,
+                        include_advanced=True,
+                        include_crop=False,
+                        digest=raw_sha,
+                    )
 
                 # 6) Source-scoped similarity hash.
                 item = None
