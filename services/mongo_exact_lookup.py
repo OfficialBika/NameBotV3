@@ -155,6 +155,11 @@ class MongoExactLookup:
         values = list(dict.fromkeys(values))
         if not values:
             return None
+        if unified_adding_db.enabled:
+            # Canonical unified field first; fall back to legacy layouts only on miss.
+            item = await self._find_first({"file_unique_ids": {"$in": values}}, collections)
+            if item:
+                return item
         return await self._find_first(self._uid_query(values), collections)
 
     async def global_exact_uid(
@@ -196,7 +201,7 @@ class MongoExactLookup:
         if unified_adding_db.enabled:
             try:
                 cursor = unified_adding_db.collection().find(
-                    self._uid_query(values),
+                    {"file_unique_ids": {"$in": values}},
                     projection=LOOKUP_PROJECTION,
                 ).limit(max(2, limit))
                 items: list[ItemSnapshot] = []
@@ -272,6 +277,10 @@ class MongoExactLookup:
     async def exact_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not sha:
             return None
+        if unified_adding_db.enabled:
+            item = await self._find_first({"sha256": sha}, collections)
+            if item:
+                return item
         return await self._find_first(
             {"$or": [{"sha256": sha}, {"sha256_aliases": sha}, {"media.sha256": sha}, {"file.sha256": sha}, {"media_sha256": sha}, {"hash": sha}, {"file_hash": sha}]}, collections
         )
@@ -279,6 +288,10 @@ class MongoExactLookup:
     async def exact_pixel_sha(self, sha: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         if not sha:
             return None
+        if unified_adding_db.enabled:
+            item = await self._find_first({"pixel_sha256": sha}, collections)
+            if item:
+                return item
         return await self._find_first(
             {"$or": [{"pixel_sha256": sha}, {"photo_fingerprint.pixel_sha256": sha}]},
             collections,
@@ -289,6 +302,10 @@ class MongoExactLookup:
     ) -> ItemSnapshot | None:
         if not signature:
             return None
+        if unified_adding_db.enabled:
+            item = await self._find_first({"video_signature": signature}, collections)
+            if item:
+                return item
         return await self._find_first(
             {
                 "$or": [
