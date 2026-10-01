@@ -610,6 +610,10 @@ class LookupService:
             mongo_candidates = await lookup_backend.mongo_photo_candidates_fallback(
                 collections,
                 min(max(settings.photo_max_candidates, 2500), 10000),
+                phash=media_hash.phash,
+                dhash=media_hash.dhash,
+                phash_threshold=phash_threshold,
+                dhash_threshold=settings.photo_dhash_threshold,
             )
             seen = {(item.collection, item.mongo_id) for item in candidates}
             mongo_candidates = [
