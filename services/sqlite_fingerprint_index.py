@@ -1030,16 +1030,17 @@ class SQLiteFingerprintIndex:
                 log.exception("SQLite fingerprint sync loop failed")
                 await asyncio.sleep(max(2, settings.sqlite_sync_seconds))
 
-    async def _photo_rows_for_hash(
+    async def _photo_items_for_hash(
         self,
         collections: list[str] | None,
         field_name: str,
         value: str | None,
         threshold: int,
         limit: int,
-    ) -> list[aiosqlite.Row]:
+        existing: set[tuple[str, str]] | None = None,
+    ) -> list[ItemSnapshot]:
         conn = self.read_db or self.db
-        if conn is None or not value:
+        if conn is None or not value or limit <= 0:
             return []
         count = min(HashChunkIndex.COUNTS, key=lambda number: abs(number - (threshold + 1)))
         chunks = HashChunkIndex._chunks(value, count)
@@ -1062,10 +1063,29 @@ class SQLiteFingerprintIndex:
             params.extend(collections)
         sql += " LIMIT ?"
         params.append(max(1, limit))
+
         cursor = await conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return rows
+        out: list[ItemSnapshot] = []
+        seen = existing if existing is not None else set()
+        try:
+            while len(out) < limit:
+                rows = await cursor.fetchmany(100)
+                if not rows:
+                    break
+                for row in rows:
+                    item = self._item_from_json(str(row["item_json"]))
+                    if not item:
+                        continue
+                    key = (item.collection, item.mongo_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(item)
+                    if len(out) >= limit:
+                        break
+        finally:
+            await cursor.close()
+        return out
 
     async def photo_candidates(
         self,
@@ -1077,39 +1097,56 @@ class SQLiteFingerprintIndex:
         max_candidates: int,
     ) -> list[ItemSnapshot]:
         conn = self.read_db or self.db
-        if conn is None:
+        if conn is None or max_candidates <= 0:
             return []
         selected = list(collections) if collections else None
-        rows = await self._photo_rows_for_hash(
-            selected, "phash", phash, phash_threshold, max_candidates
-        )
-        if len(rows) < max_candidates:
-            rows += await self._photo_rows_for_hash(
-                selected, "dhash", dhash, dhash_threshold, max_candidates - len(rows)
-            )
         items: dict[tuple[str, str], ItemSnapshot] = {}
-        for row in rows:
-            item = self._item_from_json(str(row["item_json"]))
-            if item:
+
+        phash_items = await self._photo_items_for_hash(
+            selected, "phash", phash, phash_threshold, max_candidates, set()
+        )
+        for item in phash_items:
+            items[(item.collection, item.mongo_id)] = item
+            if len(items) >= max_candidates:
+                return list(items.values())[:max_candidates]
+        del phash_items
+
+        remaining = max_candidates - len(items)
+        if remaining > 0 and dhash:
+            dhash_items = await self._photo_items_for_hash(
+                selected, "dhash", dhash, dhash_threshold, remaining, set(items)
+            )
+            for item in dhash_items:
                 items[(item.collection, item.mongo_id)] = item
                 if len(items) >= max_candidates:
                     break
+            del dhash_items
 
-        # Match Snapshot Mode behavior for scoped legacy records when hash buckets return none.
-        if not items and collections:
+        # Match Snapshot Mode behavior for scoped legacy records when hash buckets
+        # return none. Stream the fallback in small chunks instead of fetchall().
+        if not items and selected:
             marks = ",".join("?" for _ in selected)
             cursor = await conn.execute(
                 f"SELECT item_json FROM fingerprint_items WHERE collection IN ({marks}) "
                 "AND media_type='photo' LIMIT ?",
                 [*selected, max(1, max_candidates)],
             )
-            for row in await cursor.fetchall():
-                item = self._item_from_json(str(row["item_json"]))
-                if item:
-                    items[(item.collection, item.mongo_id)] = item
-            await cursor.close()
+            try:
+                while len(items) < max_candidates:
+                    rows = await cursor.fetchmany(100)
+                    if not rows:
+                        break
+                    for row in rows:
+                        item = self._item_from_json(str(row["item_json"]))
+                        if item:
+                            items[(item.collection, item.mongo_id)] = item
+                        if len(items) >= max_candidates:
+                            break
+            finally:
+                await cursor.close()
         return list(items.values())[:max_candidates]
 
+    async def video_candidates(
     async def video_candidates(
         self,
         collections: list[str] | None,
@@ -1139,25 +1176,42 @@ class SQLiteFingerprintIndex:
                 sql += f"collection IN ({marks}) AND "
             sql += "media_type='video' LIMIT ?"
             params.append(max(1, settings.video_max_candidates))
+        out: list[ItemSnapshot] = []
         cursor = await conn.execute(sql, params)
-        rows = await cursor.fetchall()
-        await cursor.close()
+        try:
+            while len(out) < settings.video_max_candidates:
+                rows = await cursor.fetchmany(100)
+                if not rows:
+                    break
+                for row in rows:
+                    item = self._item_from_json(str(row["item_json"]))
+                    if item:
+                        out.append(item)
+                    if len(out) >= settings.video_max_candidates:
+                        break
+        finally:
+            await cursor.close()
 
         # Preserve V2 compatibility when duration metadata is absent/mismatched in a scoped search.
-        if not rows and selected:
+        if not out and selected:
             cursor = await conn.execute(
                 f"SELECT item_json FROM fingerprint_items WHERE collection IN ({marks}) "
                 "AND media_type='video' LIMIT ?",
                 [*selected, max(1, settings.video_max_candidates)],
             )
-            rows = await cursor.fetchall()
-            await cursor.close()
-
-        out: list[ItemSnapshot] = []
-        for row in rows:
-            item = self._item_from_json(str(row["item_json"]))
-            if item:
-                out.append(item)
+            try:
+                while len(out) < settings.video_max_candidates:
+                    rows = await cursor.fetchmany(100)
+                    if not rows:
+                        break
+                    for row in rows:
+                        item = self._item_from_json(str(row["item_json"]))
+                        if item:
+                            out.append(item)
+                        if len(out) >= settings.video_max_candidates:
+                            break
+            finally:
+                await cursor.close()
         return out
 
 
