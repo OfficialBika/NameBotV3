@@ -225,6 +225,32 @@ class MongoExactLookup:
                         items.append(item)
 
                 if not items:
+                    # Compatibility fallback for older unified documents that may
+                    # not have the canonical file_unique_ids field.
+                    cursor = unified_adding_db.collection().find(
+                        self._uid_query(values),
+                        projection=LOOKUP_PROJECTION,
+                    ).limit(max(2, limit))
+                    raw_matches = 0
+                    parsed_matches = 0
+                    unknown_sources = []
+                    async for doc in cursor:
+                        raw_matches += 1
+                        source = unified_adding_db.source_key(doc)
+                        if source not in COLLECTION_TO_OUTPUT_COMMAND:
+                            if source not in unknown_sources:
+                                unknown_sources.append(source or "<empty>")
+                            continue
+                        item = parse_item(
+                            source,
+                            COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                            doc,
+                        )
+                        if item:
+                            parsed_matches += 1
+                            items.append(item)
+
+                if not items:
                     log.warning(
                         "Global UID miss uids=%s raw_matches=%s parsed_matches=%s unknown_sources=%s",
                         values,
