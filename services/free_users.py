@@ -6,7 +6,7 @@ from database.mongo import get_db
 from utils.ttl_cache import TTLCache
 
 COLLECTION_NAME = "free_users"
-_cache: TTLCache[int, bool] = TTLCache(20000, 300)
+_cache: TTLCache[int, bool] = TTLCache(5000, 300)
 
 
 async def is_free_user(user_id: int) -> bool:
