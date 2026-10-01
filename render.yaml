@@ -25,6 +25,14 @@ services:
         value: "true"
       - key: SQLITE_BATCH_SIZE
         value: "250"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: MKL_NUM_THREADS
+        value: "1"
+      - key: NUMEXPR_NUM_THREADS
+        value: "1"
       - key: RESULT_CACHE_MAX_ITEMS
         value: "5000"
       - key: RESULT_CACHE_TTL_SECONDS
