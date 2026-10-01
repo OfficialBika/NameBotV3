@@ -94,7 +94,10 @@ async def bootstrap_core(bot: Bot, *, webhook: bool) -> list[asyncio.Task]:
             # Keep startup responsive, but retry incomplete builds independently of
             # periodic scanning. MongoDB exact lookup remains available while SQLite builds.
             tasks.append(asyncio.create_task(sqlite_index.ensure_built(), name="sqlite-initial-build"))
-        if settings.sqlite_build_on_start:
+        # sync_loop already owns initial-build and retry scheduling when
+        # SQLITE_SYNC_SECONDS is enabled. Do not start a second readiness loop:
+        # duplicate rebuild attempts can repeatedly spike RAM on small instances.
+        if settings.sqlite_build_on_start and settings.sqlite_sync_seconds <= 0:
             tasks.append(asyncio.create_task(sqlite_index.ensure_ready_loop(), name="sqlite-readiness-retry"))
         log.info("Lookup engine selected: SQLITE hybrid path=%s", settings.sqlite_index_path)
     else:
