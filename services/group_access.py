@@ -1,3 +1,4 @@
+import asyncio
 from __future__ import annotations
 
 import time
@@ -89,7 +90,10 @@ async def set_group_approved(chat_id: int, enabled: bool = True, message: Messag
 
 
 async def can_auto_lookup(message: Message) -> bool:
-    await remember_group_from_message(message)
+    # Group metadata is bookkeeping only. Never block media lookup on a Mongo
+    # upsert; the first message in a group used to pay this network round-trip.
+    if getattr(message.chat, "type", "") != "private":
+        asyncio.create_task(remember_group_from_message(message))
     if not settings.auto_lookup_enabled:
         return False
     if message.chat.type == "private":
