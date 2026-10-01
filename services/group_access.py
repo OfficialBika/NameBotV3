@@ -91,12 +91,12 @@ async def set_group_approved(chat_id: int, enabled: bool = True, message: Messag
 
 
 async def can_auto_lookup(message: Message) -> bool:
+    if not settings.auto_lookup_enabled:
+        return False
     # Group metadata is bookkeeping only. Never block media lookup on a Mongo
     # upsert; the first message in a group used to pay this network round-trip.
     if getattr(message.chat, "type", "") != "private":
         asyncio.create_task(remember_group_from_message(message))
-    if not settings.auto_lookup_enabled:
-        return False
     if message.chat.type == "private":
         return settings.auto_lookup_in_dm
     if settings.support_group_id and message.chat.id == settings.support_group_id and settings.auto_lookup_in_support_group:
