@@ -223,12 +223,13 @@ class SQLiteFingerprintIndex:
         # all other compact lookup fields remain unchanged.
         compact["video_samples"] = [
             {
-                "position": sample.position,
-                "frame_index": sample.frame_index,
-                "phash": sample.phash,
-                "dhash": sample.dhash,
+                "position": float(sample.position),
+                "frame_index": int(sample.frame_index),
+                "phash": str(sample.phash),
+                "dhash": str(sample.dhash),
             }
             for sample in (item.video_samples or ())
+            if isinstance(sample, VideoSampleHash)
         ]
         return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
