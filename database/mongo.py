@@ -23,6 +23,11 @@ async def init_mongo() -> AsyncIOMotorDatabase:
         connectTimeoutMS=settings.mongo_connect_timeout_ms,
         socketTimeoutMS=settings.mongo_socket_timeout_ms,
         maxIdleTimeMS=120000,
+        # Lookup concurrency is intentionally small on Render Free. Keep the
+        # driver pool bounded so idle/parallel Mongo sockets do not reserve
+        # unnecessary process resources.
+        maxPoolSize=20,
+        maxConnecting=2,
         retryWrites=True,
     )
     _db = _client[settings.db_name]
