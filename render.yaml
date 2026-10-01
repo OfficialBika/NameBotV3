@@ -23,5 +23,15 @@ services:
         value: "10"
       - key: SQLITE_BUILD_ON_START
         value: "true"
+      - key: RESULT_CACHE_MAX_ITEMS
+        value: "5000"
+      - key: RESULT_CACHE_TTL_SECONDS
+        value: "900"
+      - key: MISS_CACHE_TTL_SECONDS
+        value: "60"
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: "2"
+      - key: MAX_CONCURRENT_LOOKUPS
+        value: "6"
       - key: ENABLE_HASH_FALLBACK
         value: "true"
