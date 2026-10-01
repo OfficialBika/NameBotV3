@@ -29,7 +29,7 @@ SQLITE_ITEM_FIELDS = (
     "crop_hash", "frame_hashes", "video_samples", "video_signature", "duration_ms",
     "origin_chat_id", "origin_message_id",
 )
-SQLITE_INDEX_SCHEMA_VERSION = "4"
+SQLITE_INDEX_SCHEMA_VERSION = "5"
 
 
 class SQLiteFingerprintIndex:
@@ -279,19 +279,29 @@ class SQLiteFingerprintIndex:
             indexed_total = await self.count()
 
             if unified_adding_db.enabled:
-                mongo_total = int(
+                canonical_total = int(
                     await unified_adding_db.collection().count_documents(
                         self._indexable_mongo_query()
                     )
                 )
+
+                async def legacy_count(collection: str) -> int:
+                    return int(await get_db()[collection].count_documents(self._indexable_mongo_query()))
+
+                legacy_totals = await asyncio.gather(
+                    *(legacy_count(collection) for collection in COLLECTION_TO_OUTPUT_COMMAND)
+                )
+                mongo_total = canonical_total + sum(legacy_totals)
                 if indexed_total != mongo_total:
                     log.warning(
-                        "SQLite completeness mismatch canonical db=%s collection=%s "
-                        "sqlite=%s mongo=%s",
+                        "SQLite completeness mismatch unified+legacy canonical_db=%s canonical_collection=%s "
+                        "sqlite=%s expected=%s canonical=%s legacy=%s",
                         unified_adding_db.db_name,
                         unified_adding_db.collection_name,
                         indexed_total,
                         mongo_total,
+                        canonical_total,
+                        sum(legacy_totals),
                     )
                     return False
                 return True
@@ -419,6 +429,34 @@ class SQLiteFingerprintIndex:
                             "SQLite unified Adding DB initial index load failed for %s",
                             unified_adding_db.collection_name,
                         )
+
+                    # Keep the pre-unification physical collections indexed too.
+                    # This allows the lookup service to work immediately against
+                    # the existing datasets while canonical characters is still
+                    # being filled/migrated.
+                    for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
+                        batch = []
+                        try:
+                            cursor = get_db()[collection].find(
+                                {}, projection=SQLITE_LOOKUP_PROJECTION
+                            ).batch_size(max(1, settings.sqlite_batch_size))
+                            async for doc in cursor:
+                                item = parse_item(collection, default_command, doc)
+                                if not item:
+                                    continue
+                                batch.append(item)
+                                if len(batch) >= max(1, settings.sqlite_batch_size):
+                                    await self.upsert_items(batch)
+                                    total += len(batch)
+                                    batch.clear()
+                            if batch:
+                                await self.upsert_items(batch)
+                                total += len(batch)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            failed_collections.append(collection)
+                            log.exception("SQLite legacy index load failed for %s", collection)
                 else:
                     for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
                         batch: list[ItemSnapshot] = []
@@ -779,6 +817,33 @@ class SQLiteFingerprintIndex:
             except Exception:
                 failed = True
                 log.exception("SQLite unified Adding DB delta sync failed")
+
+            # Also sync legacy physical collections until all lookup data has
+            # been migrated into canonical characters.
+            for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
+                batch: list[ItemSnapshot] = []
+                try:
+                    cursor = get_db()[collection].find(
+                        {"updated_at": {"$gt": start, "$lte": next_watermark}},
+                        projection=LOOKUP_PROJECTION,
+                    ).batch_size(max(1, settings.sqlite_batch_size))
+                    async for doc in cursor:
+                        item = parse_item(collection, default_command, doc)
+                        if not item:
+                            continue
+                        batch.append(item)
+                        if len(batch) >= max(1, settings.sqlite_batch_size):
+                            await self.upsert_items(batch)
+                            changed_total += len(batch)
+                            batch.clear()
+                    if batch:
+                        await self.upsert_items(batch)
+                        changed_total += len(batch)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    failed = True
+                    log.exception("SQLite legacy delta sync failed for %s", collection)
         else:
             for collection, default_command in COLLECTION_TO_OUTPUT_COMMAND.items():
                 batch: list[ItemSnapshot] = []
