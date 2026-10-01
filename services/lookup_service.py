@@ -830,18 +830,20 @@ class LookupService:
         # Same correctness guard as photos: a stale/partial SQLite index cannot
         # hide a valid MongoDB record when the local candidates do not verify.
         if best_item is None and settings.lookup_engine_mode == "sqlite":
+            seen = {(item.collection, item.mongo_id) for item in candidates}
+            del candidates
             mongo_candidates = await lookup_backend.mongo_video_candidates_fallback(
                 collections,
                 media_hash.duration_ms,
                 settings.video_duration_tolerance_seconds,
                 min(max(settings.video_max_candidates, 5000), 10000),
             )
-            seen = {(item.collection, item.mongo_id) for item in candidates}
             mongo_candidates = [
                 item for item in mongo_candidates
                 if (item.collection, item.mongo_id) not in seen
             ]
             best_item, best_score = await evaluate(mongo_candidates)
+            del mongo_candidates
         return best_item, best_score
 
 
