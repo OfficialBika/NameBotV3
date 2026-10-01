@@ -220,6 +220,7 @@ class MongoExactLookup:
         self,
         values: list[str],
         collections: list[str] | None = None,
+        preferred_collections: list[str] | None = None,
     ) -> ItemSnapshot | None:
         if not values:
             return None
@@ -228,42 +229,38 @@ class MongoExactLookup:
         if not selected:
             return None
 
-        tasks = [
-            asyncio.create_task(
-                self._find_legacy_uid_in_collection(collection, self._uid_query_new(values))
-            )
-            for collection in selected
-        ]
-        try:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-        finally:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        for preferred in selected:
-            for result in results:
-                if isinstance(result, ItemSnapshot) and result.collection == preferred:
-                    return result
-        for result in results:
-            if isinstance(result, ItemSnapshot):
-                return result
+        preferences: list[str] = []
+        for value in (preferred_collections or []):
+            value = str(value or "").strip().lower()
+            if value and value not in preferences:
+                preferences.append(value)
 
-        tasks = [
-            asyncio.create_task(
-                self._find_legacy_uid_in_collection(collection, self._uid_query_legacy(values))
-            )
-            for collection in selected
-        ]
-        try:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-        finally:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        for preferred in selected:
-            for result in results:
-                if isinstance(result, ItemSnapshot) and result.collection == preferred:
-                    return result
-        for result in results:
-            if isinstance(result, ItemSnapshot):
-                return result
-        return None
+        async def search(query: dict[str, Any]) -> ItemSnapshot | None:
+            tasks = [
+                asyncio.create_task(
+                    self._find_legacy_uid_in_collection(collection, query)
+                )
+                for collection in selected
+            ]
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            found = [
+                result for result in results
+                if isinstance(result, ItemSnapshot)
+            ]
+            for preferred in preferences:
+                item = next((result for result in found if result.collection == preferred), None)
+                if item:
+                    return item
+            return found[0] if found else None
+
+        item = await search(self._uid_query_new(values))
+        if item:
+            return item
+        return await search(self._uid_query_legacy(values))
 
     async def exact_uids(
         self, uids: Iterable[str], collections: list[str] | None = None
@@ -385,7 +382,8 @@ class MongoExactLookup:
                     # only after the canonical indexed query misses.
                     legacy_item = await self._legacy_exact_uids(
                         values,
-                        preferred_collections or None,
+                        None,
+                        preferred_collections=preferred_collections,
                     )
                     if legacy_item:
                         log.info(
