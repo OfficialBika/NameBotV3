@@ -190,6 +190,81 @@ class MongoExactLookup:
     async def exact_uid(self, uid: str, collections: list[str] | None = None) -> ItemSnapshot | None:
         return await self.exact_uids([uid], collections)
 
+    async def _find_legacy_uid_in_collection(
+        self,
+        collection: str,
+        query: dict[str, Any],
+        projection: dict[str, int] = LOOKUP_PROJECTION,
+    ) -> ItemSnapshot | None:
+        """Query an old physical source collection without touching the canonical DB."""
+        default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
+        try:
+            async with self._sem:
+                doc = await get_db()[collection].find_one(
+                    query,
+                    projection=projection,
+                    max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
+                )
+            return parse_item(collection, default_command, doc) if doc else None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning(
+                "Mongo legacy exact lookup failed collection=%s error=%s",
+                collection,
+                exc,
+            )
+            return None
+
+    async def _legacy_exact_uids(
+        self,
+        values: list[str],
+        collections: list[str] | None = None,
+    ) -> ItemSnapshot | None:
+        if not values:
+            return None
+        selected = list(collections) if collections else list(COLLECTION_TO_OUTPUT_COMMAND.keys())
+        selected = [name for name in selected if name and name != "items_unknown"]
+        if not selected:
+            return None
+
+        tasks = [
+            asyncio.create_task(
+                self._find_legacy_uid_in_collection(collection, self._uid_query_new(values))
+            )
+            for collection in selected
+        ]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for preferred in selected:
+            for result in results:
+                if isinstance(result, ItemSnapshot) and result.collection == preferred:
+                    return result
+        for result in results:
+            if isinstance(result, ItemSnapshot):
+                return result
+
+        tasks = [
+            asyncio.create_task(
+                self._find_legacy_uid_in_collection(collection, self._uid_query_legacy(values))
+            )
+            for collection in selected
+        ]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for preferred in selected:
+            for result in results:
+                if isinstance(result, ItemSnapshot) and result.collection == preferred:
+                    return result
+        for result in results:
+            if isinstance(result, ItemSnapshot):
+                return result
+        return None
+
     async def exact_uids(
         self, uids: Iterable[str], collections: list[str] | None = None
     ) -> ItemSnapshot | None:
@@ -197,11 +272,18 @@ class MongoExactLookup:
         if not values:
             return None
 
-        # Match Adding-Helperbot's exact lookup order:
-        # canonical indexed UID first, then legacy UID layouts.
+        # Canonical unified DB first for source-scoped exact lookup.
         item = await self._find_first(self._uid_query_new(values), collections)
         if item:
             return item
+
+        # Preserve old physical source collections as a compatibility layer while
+        # the legacy datasets coexist with the canonical characters collection.
+        if unified_adding_db.enabled:
+            item = await self._legacy_exact_uids(values, collections)
+            if item:
+                return item
+
         return await self._find_first(self._uid_query_legacy(values), collections)
 
     async def exact_file_ids(
