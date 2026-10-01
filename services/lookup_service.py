@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
+import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, replace
 
@@ -11,7 +12,14 @@ from aiogram import Bot
 from aiogram.types import Message
 
 from config import settings
-from services.hash_service import MediaHash, hamming_hex, hash_photo, hash_video, normalized_hamming, sha256_bytes
+from services.hash_service import (
+    MediaHash,
+    hash_photo_file,
+    hash_video_file,
+    hamming_hex,
+    normalized_hamming,
+    sha256_file,
+)
 from services.lookup_backend import lookup_backend
 from services.sqlite_fingerprint_index import sqlite_index
 from services.snapshot_cache import ItemSnapshot
@@ -384,8 +392,8 @@ class LookupService:
                         collections,
                         bool(download_file_id),
                     )
-                    data = await self._download(bot, download_file_id)
-                    if not data:
+                    temp_path = await self._download_to_tempfile(bot, download_file_id)
+                    if not temp_path:
                         log.warning(
                             "HASH DEBUG download_failed message=%s media_type=%s",
                             getattr(message, "message_id", None),
@@ -393,54 +401,56 @@ class LookupService:
                         )
                         return self._done(None, "download_failed", started)
 
-                    # Raw SHA-256 is much cheaper than decoding an image or
-                    # sampling a video. Check it before any heavyweight fingerprinting.
-                    raw_sha = await asyncio.to_thread(sha256_bytes, data)
-                    log.info(
-                        "HASH DEBUG raw_sha_stage message=%s sha_present=%s",
-                        getattr(message, "message_id", None),
-                        bool(raw_sha),
-                    )
-                    item = None
-                    reason = "sha"
-                    if raw_sha:
-                        if collections:
-                            item = await lookup_backend.exact_sha(raw_sha, collections)
-                        if not item:
-                            item = await lookup_backend.exact_sha(raw_sha, None)
-                            reason = "sha_global"
-                        if item:
-                            hit = True
-                            self._cache_exact(item, file_uid, filter_tag)
-                            return self._done(
-                                self._with_command(
-                                    item,
-                                    output_command_from_message(source_message, item.collection),
-                                    source_message,
-                                ),
-                                reason,
-                                started,
-                                1.0,
-                            )
+                    try:
+                        # Stream the raw SHA from disk. The complete Telegram media
+                        # never needs to exist as a Python bytes object.
+                        raw_sha = await asyncio.to_thread(sha256_file, temp_path)
+                        log.info(
+                            "HASH DEBUG raw_sha_stage message=%s sha_present=%s",
+                            getattr(message, "message_id", None),
+                            bool(raw_sha),
+                        )
+                        item = None
+                        reason = "sha"
+                        if raw_sha:
+                            if collections:
+                                item = await lookup_backend.exact_sha(raw_sha, collections)
+                            if not item:
+                                item = await lookup_backend.exact_sha(raw_sha, None)
+                                reason = "sha_global"
+                            if item:
+                                hit = True
+                                self._cache_exact(item, file_uid, filter_tag)
+                                return self._done(
+                                    self._with_command(
+                                        item,
+                                        output_command_from_message(source_message, item.collection),
+                                        source_message,
+                                    ),
+                                    reason,
+                                    started,
+                                    1.0,
+                                )
 
-                    # Only a SHA miss reaches the heavyweight image/video fingerprinting path.
-                    media_hash = await asyncio.to_thread(
-                        hash_photo if media.media_type == "photo" else hash_video,
-                        data,
-                    )
-                    log.info(
-                        "HASH DEBUG computed message=%s sha=%s pixel_sha=%s phash=%s dhash=%s bytes=%s",
-                        getattr(message, "message_id", None),
-                        bool(media_hash.sha256),
-                        bool(media_hash.pixel_sha256),
-                        bool(media_hash.phash),
-                        bool(media_hash.dhash),
-                        len(data),
-                    )
-                    # The original media bytes are no longer needed after the
-                    # fingerprint has been computed. Release this potentially large
-                    # buffer before candidate lists/Mongo fallbacks are materialized.
-                    del data
+                        # Only a SHA miss reaches heavyweight image/video decoding.
+                        media_hash = await asyncio.to_thread(
+                            hash_photo_file if media.media_type == "photo" else hash_video_file,
+                            temp_path,
+                            raw_sha,
+                        )
+                        log.info(
+                            "HASH DEBUG computed message=%s sha=%s pixel_sha=%s phash=%s dhash=%s bytes_on_disk=true",
+                            getattr(message, "message_id", None),
+                            bool(media_hash.sha256),
+                            bool(media_hash.pixel_sha256),
+                            bool(media_hash.phash),
+                            bool(media_hash.dhash),
+                        )
+                    finally:
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
                 # 4) Decoded canonical pixel hash exact match for photos.
                 log.info(
                     "HASH DEBUG pixel_sha_stage message=%s enabled=%s",
@@ -578,25 +588,41 @@ class LookupService:
         finally:
             perf.lookup.record((time.perf_counter() - started) * 1000, hit=hit, error=error)
 
-    async def _download(self, bot: Bot, file_id: str) -> bytes | None:
+    async def _download_to_tempfile(self, bot: Bot, file_id: str) -> str | None:
         if not file_id:
             return None
         async with self.download_sem:
+            fd, path = tempfile.mkstemp(prefix="namebot-", suffix=".media")
             try:
-                result = await asyncio.wait_for(bot.download(file_id), timeout=settings.download_timeout_seconds)
-                if isinstance(result, io.BytesIO):
-                    return result.getvalue()
-                if hasattr(result, "read"):
-                    value = result.read()
-                    return value if isinstance(value, bytes) else bytes(value)
-                return None
+                with os.fdopen(fd, "w+b") as target:
+                    await asyncio.wait_for(
+                        bot.download(
+                            file_id,
+                            destination=target,
+                            timeout=settings.download_timeout_seconds,
+                        ),
+                        timeout=settings.download_timeout_seconds + 2,
+                    )
+                return path
             except asyncio.TimeoutError:
                 log.info("download timeout after %ss", settings.download_timeout_seconds)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
                 return None
             except asyncio.CancelledError:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
                 raise
             except Exception as exc:
                 log.info("download failed: %s", exc)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
                 return None
 
     def invalidate_lookup_cache(self) -> None:
