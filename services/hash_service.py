@@ -78,29 +78,55 @@ def crop_hash_distance(a: str | None, b: str | None) -> float | None:
         return None
 
 
-def hash_photo(data: bytes) -> MediaHash:
-    digest = sha256_bytes(data)
+def hash_photo(
+    data: bytes,
+    *,
+    include_advanced: bool = True,
+    include_crop: bool = True,
+    digest: str | None = None,
+) -> MediaHash:
+    """Build photo fingerprints.
+
+    The lookup path uses include_advanced=False first so exact pixel/hash
+    matches can return without calculating expensive perceptual hashes.
+    """
+    digest = digest or sha256_bytes(data)
     try:
         with Image.open(io.BytesIO(data)) as opened:
             image = ImageOps.exif_transpose(opened).convert("RGB")
             width, height = image.size
             pixel_material = width.to_bytes(4, "big") + height.to_bytes(4, "big") + image.tobytes()
             pixel_sha = hashlib.sha256(pixel_material).hexdigest()
+            phash = str(imagehash.phash(image))
+            dhash = str(imagehash.dhash(image))
+            if not include_advanced:
+                return MediaHash(
+                    sha256=digest,
+                    pixel_sha256=pixel_sha,
+                    phash=phash,
+                    dhash=dhash,
+                    width=width,
+                    height=height,
+                )
             return MediaHash(
                 sha256=digest,
                 pixel_sha256=pixel_sha,
-                phash=str(imagehash.phash(image)),
+                phash=phash,
                 phash_large=str(imagehash.phash(image, hash_size=16)),
-                dhash=str(imagehash.dhash(image)),
+                dhash=dhash,
                 whash=str(imagehash.whash(image)),
                 colorhash=str(imagehash.colorhash(image)),
-                crop_hash=str(imagehash.crop_resistant_hash(image)),
+                crop_hash=str(imagehash.crop_resistant_hash(image)) if include_crop else None,
                 width=width,
                 height=height,
             )
     except Exception:
         return MediaHash(sha256=digest)
 
+
+def hash_photo_basic(data: bytes, *, digest: str | None = None) -> MediaHash:
+    """Fast photo fingerprint stage: pixel SHA + pHash + dHash only."""
+    return hash_photo(data, include_advanced=False, digest=digest)
 
 def _frame_bundle(frame) -> tuple[str, str]:
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -118,8 +144,9 @@ def _read_sample(cap, frame_count: int, position: float) -> VideoSampleHash | No
     return VideoSampleHash(round(float(position), 4), index, phash, dhash)
 
 
-def hash_video(data: bytes) -> MediaHash:
-    digest = sha256_bytes(data)
+def hash_video(data: bytes, *, digest: str | None = None) -> MediaHash:
+    """Build full video fingerprints after raw SHA exact matching has missed."""
+    digest = digest or sha256_bytes(data)
     tmp_path: str | None = None
     cap = None
     try:
@@ -137,15 +164,30 @@ def hash_video(data: bytes) -> MediaHash:
         if frame_count <= 0:
             return MediaHash(sha256=digest, fps=fps, width=width, height=height)
 
+        # The legacy and V3 position sets overlap at 0.5. Decode each
+        # physical frame only once, then project the same sample into both
+        # compatibility outputs.
+        unique_positions = list(
+            dict.fromkeys(
+                [float(value) for value in settings.video_sample_points]
+                + [float(value) for value in settings.video_v3_sample_points]
+            )
+        )
+        sampled: dict[float, VideoSampleHash] = {}
+        for position in unique_positions:
+            sample = _read_sample(cap, frame_count, position)
+            if sample:
+                sampled[round(float(position), 4)] = sample
+
         legacy: list[str] = []
         for position in settings.video_sample_points:
-            sample = _read_sample(cap, frame_count, position)
+            sample = sampled.get(round(float(position), 4))
             if sample:
                 legacy.append(sample.phash)
 
         samples: list[VideoSampleHash] = []
         for position in settings.video_v3_sample_points:
-            sample = _read_sample(cap, frame_count, position)
+            sample = sampled.get(round(float(position), 4))
             if sample:
                 samples.append(sample)
 
