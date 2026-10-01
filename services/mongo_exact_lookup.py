@@ -562,14 +562,53 @@ class MongoExactLookup:
             collections,
         )
 
-    async def photo_candidates(
-        self, collections: list[str] | None, max_candidates: int
-    ) -> list[ItemSnapshot]:
-        """Small fallback candidate scan used only while the SQLite index is not ready."""
-        selected = self._collections(collections)
-        if not selected or max_candidates <= 0:
+    @staticmethod
+    def _chunks(value: str | None, count: int) -> list[str]:
+        """Split a hexadecimal hash into positional chunks for Mongo bucket lookup."""
+        if not value:
             return []
-        query = {
+        text = str(value).strip().lower()
+        try:
+            number = int(text, 16)
+        except Exception:
+            return []
+        bits = len(text) * 4
+        if bits <= 0 or count <= 0 or count > bits:
+            return []
+
+        base, extra = divmod(bits, count)
+        out: list[str] = []
+        consumed = 0
+        for index in range(count):
+            size = base + (1 if index < extra else 0)
+            shift = bits - consumed - size
+            out.append(format((number >> shift) & ((1 << size) - 1), "x"))
+            consumed += size
+        return out
+
+    @classmethod
+    def _photo_candidate_query(
+        cls,
+        phash: str | None,
+        dhash: str | None,
+        phash_threshold: int,
+        dhash_threshold: int,
+    ) -> dict[str, Any]:
+        """Build the indexed photo candidate query used by Adding-Helperbot."""
+        ors: list[dict[str, Any]] = []
+
+        phash_chunks = cls._chunks(phash, max(1, int(phash_threshold) + 1))
+        if phash_chunks:
+            ors.append({"phash_chunks": {"$in": phash_chunks}})
+
+        dhash_chunks = cls._chunks(dhash, max(1, int(dhash_threshold) + 1))
+        if dhash_chunks:
+            ors.append({"dhash_chunks": {"$in": dhash_chunks}})
+
+        if ors:
+            return {"$or": ors}
+
+        return {
             "$or": [
                 {"photo_fingerprint.phash": {"$exists": True}},
                 {"phash": {"$exists": True}},
@@ -577,45 +616,175 @@ class MongoExactLookup:
                 {"image_phash": {"$exists": True}},
             ]
         }
-        out: list[ItemSnapshot] = []
-        if unified_adding_db.enabled:
-            try:
-                cursor = unified_adding_db.collection().find(
-                    unified_adding_db.scoped_query(query, selected if collections else None),
-                    projection=LOOKUP_PROJECTION,
-                ).limit(max_candidates)
-                async for doc in cursor:
-                    source = unified_adding_db.source_key(doc)
-                    item = parse_item(
-                        source,
-                        COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
-                        doc,
-                    )
-                    if item:
-                        out.append(item)
-                        if len(out) >= max_candidates:
-                            return out
-            except Exception as exc:
-                log.warning("Mongo unified photo candidate fallback failed sources=%s error=%s", selected, exc)
+
+    @staticmethod
+    def _photo_legacy_candidate_query() -> dict[str, Any]:
+        """Find older photo records that have hashes but no Mongo chunk fields."""
+        return {
+            "$or": [
+                {
+                    "phash_chunks": {"$exists": False},
+                    "phash": {"$exists": True, "$ne": None},
+                },
+                {
+                    "dhash_chunks": {"$exists": False},
+                    "dhash": {"$exists": True, "$ne": None},
+                },
+                {
+                    "phash_chunks": {"$exists": False},
+                    "photo_fingerprint.phash": {"$exists": True, "$ne": None},
+                },
+            ]
+        }
+
+    async def photo_candidates(
+        self,
+        collections: list[str] | None,
+        max_candidates: int,
+        *,
+        phash: str | None = None,
+        dhash: str | None = None,
+        phash_threshold: int | None = None,
+        dhash_threshold: int | None = None,
+    ) -> list[ItemSnapshot]:
+        """Return relevant photo candidates using Mongo hash chunks first."""
+        selected = self._collections(collections)
+        if not selected or max_candidates <= 0:
+            return []
+
+        p_threshold = (
+            settings.photo_phash_threshold
+            if phash_threshold is None
+            else max(0, int(phash_threshold))
+        )
+        d_threshold = (
+            settings.photo_dhash_threshold
+            if dhash_threshold is None
+            else max(0, int(dhash_threshold))
+        )
+        targeted_query = self._photo_candidate_query(
+            phash,
+            dhash,
+            p_threshold,
+            d_threshold,
+        )
+        legacy_query = self._photo_legacy_candidate_query()
+        has_targeted_hash = bool(
+            self._chunks(phash, p_threshold + 1)
+            or self._chunks(dhash, d_threshold + 1)
+        )
+
+        async def parse_unified(cursor) -> list[ItemSnapshot]:
+            out: list[ItemSnapshot] = []
+            seen: set[str] = set()
+            async for doc in cursor:
+                source = unified_adding_db.source_key(doc)
+                item = parse_item(
+                    source,
+                    COLLECTION_TO_OUTPUT_COMMAND.get(source, settings.default_command),
+                    doc,
+                )
+                if not item or item.mongo_id in seen:
+                    continue
+                seen.add(item.mongo_id)
+                out.append(item)
+                if len(out) >= max_candidates:
+                    break
             return out
 
+        async def parse_legacy(collection: str, cursor) -> list[ItemSnapshot]:
+            out: list[ItemSnapshot] = []
+            seen: set[str] = set()
+            default_command = COLLECTION_TO_OUTPUT_COMMAND.get(
+                collection,
+                settings.default_command,
+            )
+            async for doc in cursor:
+                item = parse_item(collection, default_command, doc)
+                if not item or item.mongo_id in seen:
+                    continue
+                seen.add(item.mongo_id)
+                out.append(item)
+                if len(out) >= max_candidates:
+                    break
+            return out
+
+        if unified_adding_db.enabled:
+            try:
+                scoped_target = unified_adding_db.scoped_query(
+                    targeted_query,
+                    selected if collections else None,
+                )
+                cursor = unified_adding_db.collection().find(
+                    scoped_target,
+                    projection=LOOKUP_PROJECTION,
+                ).limit(max_candidates)
+                out = await parse_unified(cursor)
+
+                if has_targeted_hash and len(out) < max_candidates:
+                    remaining = max_candidates - len(out)
+                    scoped_legacy = unified_adding_db.scoped_query(
+                        legacy_query,
+                        selected if collections else None,
+                    )
+                    legacy_cursor = unified_adding_db.collection().find(
+                        scoped_legacy,
+                        projection=LOOKUP_PROJECTION,
+                    ).limit(remaining)
+                    for item in await parse_unified(legacy_cursor):
+                        if not any(existing.mongo_id == item.mongo_id for existing in out):
+                            out.append(item)
+                            if len(out) >= max_candidates:
+                                break
+
+                log.debug(
+                    "Mongo photo candidates unified stage=%s sources=%s count=%s",
+                    "chunked" if has_targeted_hash else "legacy",
+                    selected if collections else "global",
+                    len(out),
+                )
+                return out
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning(
+                    "Mongo unified photo candidate lookup failed sources=%s error=%s",
+                    selected,
+                    exc,
+                )
+                return []
+
+        out: list[ItemSnapshot] = []
         per_collection = max(1, max_candidates // max(1, len(selected)))
         for collection in selected:
             try:
                 cursor = get_db()[collection].find(
-                    query,
+                    targeted_query,
                     projection=LOOKUP_PROJECTION,
                 ).limit(per_collection)
-                default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
-                async for doc in cursor:
-                    item = parse_item(collection, default_command, doc)
-                    if item:
-                        out.append(item)
-                        if len(out) >= max_candidates:
-                            return out
+                current = await parse_legacy(collection, cursor)
+                out.extend(current)
+
+                if has_targeted_hash and len(current) < per_collection:
+                    remaining = per_collection - len(current)
+                    legacy_cursor = get_db()[collection].find(
+                        legacy_query,
+                        projection=LOOKUP_PROJECTION,
+                    ).limit(remaining)
+                    for item in await parse_legacy(collection, legacy_cursor):
+                        if not any(existing.mongo_id == item.mongo_id for existing in out):
+                            out.append(item)
+                            if len(out) >= max_candidates:
+                                return out[:max_candidates]
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                log.warning("Mongo photo candidate fallback failed collection=%s error=%s", collection, exc)
-        return out
+                log.warning(
+                    "Mongo photo candidate lookup failed collection=%s error=%s",
+                    collection,
+                    exc,
+                )
+        return out[:max_candidates]
 
     async def video_candidates(
         self, collections: list[str] | None, duration_ms: int, tolerance_seconds: int, max_candidates: int
