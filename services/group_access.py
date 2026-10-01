@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
 from aiogram.types import Message
@@ -89,7 +90,9 @@ async def set_group_approved(chat_id: int, enabled: bool = True, message: Messag
 
 
 async def can_auto_lookup(message: Message) -> bool:
-    await remember_group_from_message(message)
+    # Group metadata is bookkeeping only; keep MongoDB writes off the lookup hot path.
+    if getattr(message.chat, "type", "") != "private":
+        asyncio.create_task(remember_group_from_message(message))
     if not settings.auto_lookup_enabled:
         return False
     if message.chat.type == "private":
