@@ -1027,7 +1027,8 @@ class SQLiteFingerprintIndex:
         threshold: int,
         limit: int,
     ) -> list[aiosqlite.Row]:
-        if self.db is None or not value:
+        conn = self.read_db or self.db
+        if conn is None or not value:
             return []
         count = min(HashChunkIndex.COUNTS, key=lambda number: abs(number - (threshold + 1)))
         chunks = HashChunkIndex._chunks(value, count)
@@ -1048,8 +1049,9 @@ class SQLiteFingerprintIndex:
             collection_marks = ",".join("?" for _ in collections)
             sql += f" AND hc.collection IN ({collection_marks})"
             params.extend(collections)
+        sql += " LIMIT ?"
         params.append(max(1, limit))
-        cursor = await self.db.execute(sql, params)
+        cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         await cursor.close()
         return rows
