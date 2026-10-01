@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import asdict, fields
+from dataclasses import fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -211,8 +211,13 @@ class SQLiteFingerprintIndex:
         # Do not serialize asdict(item): ItemSnapshot contains compatibility/output
         # fields that are not needed for lookup and would unnecessarily duplicate
         # MongoDB data inside the local SQLite file.
-        data = asdict(item)
-        compact = {key: data.get(key) for key in SQLITE_ITEM_FIELDS}
+        # Do not use dataclasses.asdict() here: it recursively deep-copies
+        # every ItemSnapshot field (including fields intentionally excluded from
+        # SQLite), creating a needless temporary RAM spike during batch builds.
+        compact = {
+            key: getattr(item, key, None)
+            for key in SQLITE_ITEM_FIELDS
+        }
         return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
