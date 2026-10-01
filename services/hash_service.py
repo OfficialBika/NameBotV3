@@ -84,8 +84,13 @@ def hash_photo(data: bytes) -> MediaHash:
         with Image.open(io.BytesIO(data)) as opened:
             image = ImageOps.exif_transpose(opened).convert("RGB")
             width, height = image.size
-            pixel_material = width.to_bytes(4, "big") + height.to_bytes(4, "big") + image.tobytes()
-            pixel_sha = hashlib.sha256(pixel_material).hexdigest()
+            # Preserve the exact pixel-SHA input format without constructing a
+            # second full-size concatenated bytes object.
+            pixel_hasher = hashlib.sha256()
+            pixel_hasher.update(width.to_bytes(4, "big"))
+            pixel_hasher.update(height.to_bytes(4, "big"))
+            pixel_hasher.update(image.tobytes())
+            pixel_sha = pixel_hasher.hexdigest()
             return MediaHash(
                 sha256=digest,
                 pixel_sha256=pixel_sha,
