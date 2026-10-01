@@ -18,6 +18,39 @@ from services.unified_adding_db import unified_adding_db
 log = logging.getLogger(__name__)
 
 
+# Candidate projections intentionally include only fields needed to score a
+# perceptual-hash match. Exact lookup keeps LOOKUP_PROJECTION unchanged.
+PHOTO_CANDIDATE_PROJECTION: dict[str, int] = {
+    "name": 1, "character_name": 1, "char_name": 1, "item_name": 1,
+    "card_name": 1, "display_name": 1, "title": 1,
+    "command_name": 1, "source_key": 1, "source_collection": 1,
+    "media_type": 1, "type": 1, "file_type": 1,
+    "phash": 1, "phash_large": 1, "dhash": 1, "whash": 1, "colorhash": 1,
+    "photo_phash": 1, "image_phash": 1,
+    "photo_fingerprint.phash": 1,
+    "photo_fingerprint.phash_large": 1,
+    "photo_fingerprint.dhash": 1,
+    "photo_fingerprint.whash": 1,
+    "photo_fingerprint.colorhash": 1,
+    "media.phash": 1, "file.phash": 1,
+    "media.name": 1, "character.name": 1,
+}
+
+VIDEO_CANDIDATE_PROJECTION: dict[str, int] = {
+    "name": 1, "character_name": 1, "char_name": 1, "item_name": 1,
+    "card_name": 1, "display_name": 1, "title": 1,
+    "command_name": 1, "source_key": 1, "source_collection": 1,
+    "media_type": 1, "type": 1, "file_type": 1,
+    "frame_hashes": 1, "video_frame_hashes": 1, "frames": 1,
+    "video_samples": 1, "video_signature": 1,
+    "video_fingerprint.sample_hashes": 1,
+    "video_fingerprint.video_signature": 1,
+    "video_fingerprint.duration_ms": 1,
+    "duration_ms": 1,
+    "media_geometry.duration_ms": 1,
+}
+
+
 # Catch-only compatibility projection. Kept separate so legacy Catch identifiers
 # do not alter the projection used by other lookup sources.
 CATCH_COMPAT_PROJECTION = dict(LOOKUP_PROJECTION)
@@ -819,7 +852,7 @@ class MongoExactLookup:
                 )
                 cursor = unified_adding_db.collection().find(
                     scoped_target,
-                    projection=SQLITE_LOOKUP_PROJECTION,
+                    projection=PHOTO_CANDIDATE_PROJECTION,
                 ).limit(max_candidates)
                 out = await parse_unified(cursor)
 
@@ -831,7 +864,7 @@ class MongoExactLookup:
                     )
                     legacy_cursor = unified_adding_db.collection().find(
                         scoped_legacy,
-                        projection=SQLITE_LOOKUP_PROJECTION,
+                        projection=PHOTO_CANDIDATE_PROJECTION,
                     ).limit(remaining)
                     for item in await parse_unified(legacy_cursor):
                         if not any(existing.mongo_id == item.mongo_id for existing in out):
@@ -864,7 +897,7 @@ class MongoExactLookup:
             try:
                 cursor = get_db()[collection].find(
                     targeted_query,
-                    projection=SQLITE_LOOKUP_PROJECTION,
+                    projection=PHOTO_CANDIDATE_PROJECTION,
                 ).limit(per_collection)
                 current = await parse_legacy(collection, cursor)
                 out.extend(current)
@@ -873,7 +906,7 @@ class MongoExactLookup:
                     remaining = per_collection - len(current)
                     legacy_cursor = get_db()[collection].find(
                         legacy_query,
-                        projection=SQLITE_LOOKUP_PROJECTION,
+                        projection=PHOTO_CANDIDATE_PROJECTION,
                     ).limit(remaining)
                     for item in await parse_legacy(collection, legacy_cursor):
                         if not any(existing.mongo_id == item.mongo_id for existing in out):
@@ -923,7 +956,7 @@ class MongoExactLookup:
             try:
                 cursor = unified_adding_db.collection().find(
                     unified_adding_db.scoped_query(query, selected if collections else None),
-                    projection=SQLITE_LOOKUP_PROJECTION,
+                    projection=VIDEO_CANDIDATE_PROJECTION,
                 ).limit(max_candidates)
                 async for doc in cursor:
                     source = unified_adding_db.source_key(doc)
@@ -945,7 +978,7 @@ class MongoExactLookup:
             try:
                 cursor = get_db()[collection].find(
                     query,
-                    projection=SQLITE_LOOKUP_PROJECTION,
+                    projection=VIDEO_CANDIDATE_PROJECTION,
                 ).limit(per_collection)
                 default_command = COLLECTION_TO_OUTPUT_COMMAND.get(collection, settings.default_command)
                 async for doc in cursor:
