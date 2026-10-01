@@ -169,9 +169,23 @@ class LookupBackend:
         )
 
     async def mongo_photo_candidates_fallback(
-        self, collections: list[str] | None, max_candidates: int
+        self,
+        collections: list[str] | None,
+        max_candidates: int,
+        *,
+        phash: str | None = None,
+        dhash: str | None = None,
+        phash_threshold: int | None = None,
+        dhash_threshold: int | None = None,
     ) -> list[ItemSnapshot]:
-        return await mongo_exact_lookup.photo_candidates(collections, max_candidates)
+        return await mongo_exact_lookup.photo_candidates(
+            collections,
+            max_candidates,
+            phash=phash,
+            dhash=dhash,
+            phash_threshold=phash_threshold,
+            dhash_threshold=dhash_threshold,
+        )
 
     async def mongo_video_candidates_fallback(
         self, collections: list[str] | None, duration_ms: int, tolerance_seconds: int, max_candidates: int
