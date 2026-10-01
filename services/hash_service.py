@@ -94,7 +94,16 @@ def hash_photo(data: bytes) -> MediaHash:
     digest = sha256_bytes(data)
     try:
         with Image.open(io.BytesIO(data)) as opened:
-            image = ImageOps.exif_transpose(opened).convert("RGB")
+            orientation = 1
+            try:
+                orientation = int((opened.getexif() or {}).get(274, 1) or 1)
+            except Exception:
+                orientation = 1
+            image = (
+                opened.convert("RGB")
+                if orientation == 1
+                else ImageOps.exif_transpose(opened).convert("RGB")
+            )
             width, height = image.size
             # Preserve the exact pixel-SHA input format without constructing a
             # second full-size concatenated bytes object.
@@ -130,7 +139,18 @@ def hash_photo_file(path: str, digest: str | None = None) -> MediaHash:
     digest = digest or sha256_file(path)
     try:
         with Image.open(path) as opened:
-            image = ImageOps.exif_transpose(opened).convert("RGB")
+            # Most Telegram images have no rotation requirement. Avoid an
+            # unnecessary full-resolution EXIF-transpose copy in that common case.
+            orientation = 1
+            try:
+                orientation = int((opened.getexif() or {}).get(274, 1) or 1)
+            except Exception:
+                orientation = 1
+            image = (
+                opened.convert("RGB")
+                if orientation == 1
+                else ImageOps.exif_transpose(opened).convert("RGB")
+            )
         try:
             width, height = image.size
             pixel_hasher = hashlib.sha256()
