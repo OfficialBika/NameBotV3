@@ -24,7 +24,7 @@ services:
       - key: SQLITE_BUILD_ON_START
         value: "true"
       - key: SQLITE_BATCH_SIZE
-        value: "250"
+        value: "100"
       - key: OPENBLAS_NUM_THREADS
         value: "1"
       - key: OMP_NUM_THREADS
