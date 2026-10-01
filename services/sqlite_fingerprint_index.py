@@ -69,7 +69,7 @@ class SQLiteFingerprintIndex:
         # the tiny UID->name L1 cache.
         await self.db.execute("PRAGMA cache_size=-4096")
         await self.db.execute("PRAGMA mmap_size=0")
-        await self.db.execute("PRAGMA temp_store=MEMORY")
+        await self.db.execute("PRAGMA temp_store=FILE")
         await self.db.execute(f"PRAGMA busy_timeout={max(100, settings.sqlite_busy_timeout_ms)}")
         await self.db.execute("PRAGMA wal_autocheckpoint=1000")
         await self.db.executescript(
@@ -134,7 +134,7 @@ class SQLiteFingerprintIndex:
             await self.read_db.execute("PRAGMA synchronous=NORMAL")
             await self.read_db.execute("PRAGMA cache_size=-2048")
             await self.read_db.execute("PRAGMA mmap_size=0")
-            await self.read_db.execute("PRAGMA temp_store=MEMORY")
+            await self.read_db.execute("PRAGMA temp_store=FILE")
             await self.read_db.execute(f"PRAGMA busy_timeout={max(100, settings.sqlite_busy_timeout_ms)}")
         self.opened_at = time.time()
         self.last_sync_at = await self._load_watermark()
@@ -1002,6 +1002,12 @@ class SQLiteFingerprintIndex:
             try:
                 if settings.sqlite_build_on_start and not self.ready and not self.building:
                     await self.ensure_built()
+                    if not self.ready:
+                        # A failed/incomplete full build must not be retried every
+                        # few seconds. Exact Mongo fallback remains available while
+                        # SQLite waits before the next repair attempt.
+                        await asyncio.sleep(max(60, min(300, settings.sqlite_sync_seconds * 12)))
+                        continue
                 await asyncio.sleep(max(2, settings.sqlite_sync_seconds))
                 if self.building:
                     continue
