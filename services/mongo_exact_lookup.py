@@ -51,6 +51,54 @@ VIDEO_CANDIDATE_PROJECTION: dict[str, int] = {
 }
 
 
+# Compact projection for normal exact UID/SHA/origin lookups. The old broad
+# LOOKUP_PROJECTION is retained for snapshot/event compatibility, but SQLite mode
+# should not transfer entire nested media/file/archive objects on the hot path.
+EXACT_LOOKUP_PROJECTION: dict[str, int] = {
+    "name": 1, "character_name": 1, "char_name": 1, "item_name": 1,
+    "card_name": 1, "display_name": 1, "title": 1,
+    "anime_name": 1, "anime": 1, "series": 1, "movie": 1, "category": 1,
+    "rarity": 1, "rank": 1, "tier": 1, "class": 1,
+    "card_id": 1, "id": 1, "item_id": 1, "char_id": 1, "character_id": 1,
+    "command_name": 1, "source_key": 1, "source_collection": 1, "item_key": 1,
+    "name_aliases": 1,
+    "media_type": 1, "type": 1, "file_type": 1,
+    "file_unique_id": 1, "file_unique_ids": 1,
+    "telegram_file_unique_id": 1, "telegram_file_unique_ids": 1,
+    "photo_file_unique_id": 1, "video_file_unique_id": 1,
+    "sha256": 1, "sha256_aliases": 1, "media_sha256": 1, "hash": 1, "file_hash": 1,
+    "phash": 1, "phash_large": 1, "dhash": 1, "whash": 1, "colorhash": 1, "crop_hash": 1,
+    "pixel_sha256": 1,
+    "photo_phash": 1, "image_phash": 1,
+    "frame_hashes": 1, "video_frame_hashes": 1, "frames": 1,
+    "video_samples": 1, "video_signature": 1,
+    "duration_ms": 1, "duration_bucket": 1, "fps": 1, "frame_count": 1,
+    "width": 1, "height": 1,
+    "media.phash": 1, "media.file_unique_id": 1, "media.file_unique_ids": 1,
+    "media.telegram_file_unique_id": 1, "media.telegram_file_unique_ids": 1,
+    "media.sha256": 1, "media.type": 1, "media.name": 1,
+    "media.frame_hashes": 1,
+    "media.id": 1, "media.rarity": 1, "media.series": 1,
+    "photo_fingerprint.phash": 1, "photo_fingerprint.pixel_sha256": 1,
+    "photo_fingerprint.phash_large": 1, "photo_fingerprint.dhash": 1,
+    "photo_fingerprint.whash": 1, "photo_fingerprint.colorhash": 1,
+    "photo_fingerprint.crop_hash": 1,
+    "video_fingerprint.sample_hashes": 1,
+    "video_fingerprint.video_signature": 1, "video_fingerprint.duration_ms": 1,
+    "video_fingerprint.fps": 1, "video_fingerprint.frame_count": 1,
+    "video_fingerprint.width": 1, "video_fingerprint.height": 1,
+    "media_geometry.duration_ms": 1, "media_geometry.fps": 1,
+    "media_geometry.frame_count": 1, "media_geometry.width": 1,
+    "media_geometry.height": 1,
+    "source_origin.chat_id": 1, "source_origin.message_id": 1,
+    "origin_chat_id": 1, "origin_message_id": 1,
+    "archive_chat_id": 1, "archive_message_id": 1,
+    "archive.chat_id": 1, "archive.message_id": 1,
+    "fingerprint_version": 1,
+    "character.name": 1, "character.id": 1, "character.rarity": 1, "character.series": 1,
+}
+
+
 # Catch-only compatibility projection. Kept separate so legacy Catch identifiers
 # do not alter the projection used by other lookup sources.
 CATCH_COMPAT_PROJECTION = dict(LOOKUP_PROJECTION)
@@ -155,14 +203,14 @@ class MongoExactLookup:
                     scoped_query = unified_adding_db.scoped_query(query, [collection])
                     doc = await unified_adding_db.collection().find_one(
                         scoped_query,
-                        projection=LOOKUP_PROJECTION,
+                        projection=EXACT_LOOKUP_PROJECTION,
                         max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
                     )
                     resolved_source = unified_adding_db.source_key(doc, collection) if doc else collection
                 else:
                     doc = await get_db()[collection].find_one(
                         query,
-                        projection=LOOKUP_PROJECTION,
+                        projection=EXACT_LOOKUP_PROJECTION,
                         max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
                     )
                     resolved_source = collection
@@ -191,7 +239,7 @@ class MongoExactLookup:
                 async with self._sem:
                     doc = await unified_adding_db.collection().find_one(
                         scoped_query,
-                        projection=LOOKUP_PROJECTION,
+                        projection=EXACT_LOOKUP_PROJECTION,
                         max_time_ms=max(100, settings.mongo_exact_query_timeout_ms),
                     )
                 if not doc:
@@ -375,7 +423,7 @@ class MongoExactLookup:
                 # Only if that misses do we query legacy UID fields.
                 docs: list[dict[str, Any]] = []
                 seen_ids: set[str] = set()
-                projection = LOOKUP_PROJECTION
+                projection = EXACT_LOOKUP_PROJECTION
                 max_items = max(2, limit)
 
                 async def collect(query: dict[str, Any]) -> None:
